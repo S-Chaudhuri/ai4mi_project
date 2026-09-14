@@ -31,10 +31,10 @@ from tqdm import tqdm
 import numpy as np
 from PIL import Image, ImageDraw
 
-# from utils import mmap_
+from utils import store_args
 
 
-def main(args) -> None:
+def main(args: argparse.Namespace) -> None:
     W, H = args.wh  # tuple[int, int]
     r: int = args.r
 
@@ -61,6 +61,8 @@ def main(args) -> None:
         # mmap_(gen_fn, range(n_img))
         for i in tqdm(range(n_img)):
             gen_fn(i)
+
+    store_args("gen_two_circles", args, args.dest)
 
 
 def gen_img(
@@ -125,7 +127,7 @@ def noise(arr: np.ndarray) -> np.ndarray:
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generation parameters")
-    parser.add_argument("--dest", type=str, required=True)
+    parser.add_argument("--dest", type=Path, required=True)
     parser.add_argument("-n", type=int, nargs=2, required=True)
     parser.add_argument("-wh", type=int, nargs=2, required=True, help="Size of image")
     parser.add_argument("-r", type=int, required=True, help="Radius of circle")
@@ -134,7 +136,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
 
     args = parser.parse_args()
+
     np.random.seed(args.seed)
+    random.seed(args.seed)
 
     print(args)
 
