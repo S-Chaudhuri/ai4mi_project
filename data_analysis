@@ -1,0 +1,812 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+import zipfile
+from pathlib import Path
+
+import numpy as np
+import nibabel as nib
+
+try:
+    from scipy import ndimage
+except ImportError:
+    ndimage = None
+
+# From the segthor paper
+SEGTHOR_LABELS = {1: "esophagus", 2: "heart", 3: "trachea", 4: "aorta"}
+
+
+PLAUSIBLE_HU = {
+    "esophagus": (-250.0, 150.0),
+    "heart": (-20.0, 250.0),
+    "trachea": (-1100.0, -300.0),
+    "aorta": (0.0, 500.0),
+}
+
+HU_PERCENTILES = (5, 25, 50, 75, 95)
+LANDMARK_PREFERENCE = ("trachea", "heart")  
+OUTLIER_Z = 3.5                             
+
+_TTY = sys.stdout.isatty()
+G = "\033[32m" if _TTY else ""
+R = "\033[31m" if _TTY else ""
+Y = "\033[33m" if _TTY else ""
+D = "\033[2m" if _TTY else ""
+Z = "\033[0m" if _TTY else ""
+
+
+
+def resolve_input(zip_path: Path | None, data_dir: Path | None) -> Path:
+    
+    if data_dir is not None:
+        if not data_dir.is_dir():
+            sys.exit(f"--data-dir does not exist: {data_dir}")
+        return data_dir
+
+    if not zip_path.is_file():
+        sys.exit(f"--zip does not exist: {zip_path}")
+    target = zip_path.with_suffix("")
+    if target.is_dir():
+        print(f"[i] reusing existing extraction at {target}")
+    else:
+        print(f"[i] extracting {zip_path} -> {target}")
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(target)
+    return target
+
+
+def find_patients(root: Path, gt_name: str = "GT.nii.gz") -> tuple[list[tuple[str, Path, Path | None]], dict[str, list[Path]]]:
+  
+    patients: list[tuple[str, Path, Path | None]] = []
+    extra_labels: dict[str, list[str]] = {}
+
+    for folder in sorted({p.parent for p in root.rglob("*.nii.gz")}):
+        volumes = sorted(folder.glob("*.nii.gz"))
+        label_files = [p for p in volumes if p.name.upper().startswith("GT")]
+        image_files = [p for p in volumes if p not in label_files]
+        if not image_files:
+            continue
+
+        # Prefer an image named after its folder, e.g. Patient_07/Patient_07.nii.gz
+        image_files.sort(key=lambda p: (folder.name.lower() not in p.name.lower(), p.name))
+        chosen_gt = next((p for p in label_files if p.name == gt_name), None)
+        if chosen_gt is None and label_files and gt_name == "GT.nii.gz":
+            chosen_gt = label_files[0]
+
+        others = [p for p in label_files if p != chosen_gt]
+        if others:
+            extra_labels[folder.name] = others
+        patients.append((folder.name, image_files[0], chosen_gt))
+
+    return patients, extra_labels
+
+
+def scan_label_values(patients: list[tuple[str, Path, Path | None]]) -> set[int]:
+    
+    values: set[int] = set()
+    for _, _, gt in patients:
+        if gt is None:
+            continue
+        arr = np.asanyarray(nib.load(str(gt)).dataobj)
+        values.update(int(v) for v in np.unique(arr))
+    return values
+
+
+def parse_class_override(text: str) -> dict[int, str]:
+    
+    mapping: dict[int, str] = {}
+    for part in text.split(","):
+        if "=" not in part:
+            sys.exit(f"--classes entry '{part}' should look like 1=aorta")
+        number, name = part.split("=", 1)
+        mapping[int(number.strip())] = name.strip()
+    return mapping
+
+
+def decide_class_names(found: set[int], override: dict[int, str] | None) -> dict[int, str]:
+    
+    foreground = sorted(v for v in found if v != 0)
+    print(f"[i] label values present in the data: {sorted(found)}")
+
+    if override:
+        unknown = [v for v in override if v not in foreground]
+        if unknown:
+            print(f"{Y}[!]{Z} --classes names label(s) {unknown} that do not occur in the data")
+        named = {v: override[v] for v in foreground if v in override}
+        for v in foreground:
+            named.setdefault(v, f"class_{v}")
+        return dict(sorted(named.items()))
+
+    if set(foreground) == set(SEGTHOR_LABELS):
+        print("[i] label set matches the SegTHOR convention")
+        return dict(SEGTHOR_LABELS)
+
+    print(f"{Y}[!]{Z} label set {foreground} does not match the SegTHOR convention "
+          f"{sorted(SEGTHOR_LABELS)}, so the default names would be wrong.")
+    print(f"    Using generic names for now. Once you know what each label is, re-run with")
+    print(f"    --classes \"{','.join(f'{v}=organ{v}' for v in foreground)}\"")
+    return {v: f"class_{v}" for v in foreground}
+
+
+def guess_identity(mean_hu: float, ml: float, largest_ml: float) -> str:
+# To decide label, also a hit at how to handle the merged labels
+    ratio = ml / largest_ml if largest_ml else 0.0
+    if mean_hu < -300:
+        return "air-filled -> trachea"
+    if ratio > 0.9:
+        return "largest soft-tissue structure -> heart"
+    if 0.15 < ratio < 0.6:
+        return "blood density, about a third of the largest -> aorta"
+    if ratio < 0.1:
+        return "small soft-tissue structure -> esophagus"
+    return "no confident guess"
+
+
+def head_foot_axis(affine: np.ndarray) -> int:
+    
+    for i, code in enumerate(nib.aff2axcodes(affine)):
+        if code in ("S", "I"):
+            return i
+    return 2
+
+
+def measure_geometry(ct_img) -> dict:
+    zooms = [float(z) for z in ct_img.header.get_zooms()[:3]]
+    shape = [int(s) for s in ct_img.shape[:3]]
+    return {
+        "shape_x": shape[0], "shape_y": shape[1], "shape_z": shape[2],
+        "spacing_x": round(zooms[0], 4),
+        "spacing_y": round(zooms[1], 4),
+        "spacing_z": round(zooms[2], 4),
+        "orientation": "".join(nib.aff2axcodes(ct_img.affine)),
+        "ct_dtype": str(ct_img.get_data_dtype()),
+    }
+
+
+def measure_label_header(gt_img, ct_img) -> dict:
+   
+    gt_zooms = [float(z) for z in gt_img.header.get_zooms()[:3]]
+    ct_zooms = [float(z) for z in ct_img.header.get_zooms()[:3]]
+    return {
+        "gt_spacing_x": round(gt_zooms[0], 4),
+        "gt_spacing_y": round(gt_zooms[1], 4),
+        "gt_spacing_z": round(gt_zooms[2], 4),
+        "affine_match": bool(np.allclose(ct_img.affine, gt_img.affine, atol=1e-4)),
+        "spacing_match": bool(np.allclose(gt_zooms, ct_zooms, atol=1e-3)),
+        "gt_ct_volume_ratio": round(float(np.prod(gt_zooms) / np.prod(ct_zooms)), 4),
+    }
+
+
+def measure_global_intensity(ct: np.ndarray) -> dict:
+    finite = ct[np.isfinite(ct)]
+    p01, p25, p50, p75, p99 = np.percentile(finite, [1, 25, 50, 75, 99])
+    return {
+        "hu_min": float(finite.min()), "hu_p01": float(p01), "hu_p25": float(p25),
+        "hu_p50": float(p50), "hu_p75": float(p75), "hu_p99": float(p99),
+        "hu_max": float(finite.max()),
+    }
+
+
+def measure_one_organ(name: str, mask: np.ndarray, ct: np.ndarray, affine: np.ndarray,
+                      voxel_ml: float, z_axis: int) -> tuple[dict, np.ndarray | None]:
+    n = int(mask.sum())
+    out: dict[str, object] = {f"{name}_voxels": n, f"{name}_ml": round(n * voxel_ml, 3)}
+    if n == 0:
+        return out, None
+
+
+    hu = ct[mask]
+    out[f"{name}_hu_mean"] = round(float(hu.mean()), 1)
+    out[f"{name}_hu_sd"] = round(float(hu.std()), 1)
+    for q, value in zip(HU_PERCENTILES, np.percentile(hu, HU_PERCENTILES)):
+        out[f"{name}_hu_p{q:02d}"] = round(float(value), 1)
+
+    
+    in_plane = tuple(a for a in range(3) if a != z_axis)
+    present = np.nonzero(mask.any(axis=in_plane))[0]
+    out[f"{name}_z_min"] = int(present.min())
+    out[f"{name}_z_max"] = int(present.max())
+    out[f"{name}_n_slices"] = int(present.size)
+
+    
+    centroid_mm = nib.affines.apply_affine(affine, np.argwhere(mask).mean(axis=0))
+
+    
+    if ndimage is not None:
+        components, n_comp = ndimage.label(mask, structure=np.ones((3, 3, 3), bool))
+        sizes = np.bincount(components.ravel())[1:]
+        out[f"{name}_ncomp"] = int(n_comp)
+        out[f"{name}_largest_frac"] = round(float(sizes.max() / n), 4)
+
+    return out, centroid_mm
+
+
+def add_relative_positions(row: dict, centroids: dict[str, np.ndarray]) -> str | None:
+
+    landmark = next((o for o in LANDMARK_PREFERENCE if o in centroids), None)
+    if landmark is None:
+        
+        landmark = next(iter(centroids), None)
+    if landmark is None:
+        return None
+    reference = centroids[landmark]
+    for name, centroid in centroids.items():
+        if name == landmark:
+            continue
+        offset = centroid - reference
+        row[f"{name}_rel_x"] = round(float(offset[0]), 2)
+        row[f"{name}_rel_y"] = round(float(offset[1]), 2)
+        row[f"{name}_rel_z"] = round(float(offset[2]), 2)
+        row[f"{name}_rel_dist"] = round(float(np.linalg.norm(offset)), 2)
+    return landmark
+
+
+def extract_preview(ct: np.ndarray, gt: np.ndarray, z_axis: int, step: int = 2):
+    
+    in_plane = tuple(a for a in range(3) if a != z_axis)
+    per_slice = (gt > 0).sum(axis=in_plane)
+    if per_slice.max() == 0:
+        return None
+    k = int(per_slice.argmax())
+    return (np.take(ct, k, axis=z_axis)[::step, ::step].astype(np.float32),
+            np.take(gt, k, axis=z_axis)[::step, ::step].astype(np.uint8))
+
+
+def profile_patient(pid: str, ct_path: Path, gt_path: Path | None,
+                    class_names: dict[int, str], want_preview: bool) -> tuple[dict, object]:
+    row: dict[str, object] = {"patient": pid}
+
+    ct_img = nib.load(str(ct_path))
+    row.update(measure_geometry(ct_img))
+    ct = ct_img.get_fdata(dtype=np.float32)
+    row.update(measure_global_intensity(ct))
+
+    if gt_path is None:
+        row["has_gt"] = False
+        return row, None
+    row["has_gt"] = True
+
+    gt_img = nib.load(str(gt_path))
+    row.update(measure_label_header(gt_img, ct_img))
+    if tuple(gt_img.shape[:3]) != tuple(ct_img.shape[:3]):
+        row["error"] = f"GT shape {tuple(gt_img.shape[:3])} != CT shape {tuple(ct_img.shape[:3])}"
+        return row, None
+
+    gt = np.rint(np.asanyarray(gt_img.dataobj)).astype(np.int16)
+    row["labels_present"] = ",".join(str(v) for v in np.unique(gt))
+
+    voxel_ml = float(row["spacing_x"] * row["spacing_y"] * row["spacing_z"]) / 1000.0
+    z_axis = head_foot_axis(gt_img.affine)
+    row["z_axis"] = z_axis
+
+    centroids: dict[str, np.ndarray] = {}
+    for label, name in class_names.items():
+        fragment, centroid = measure_one_organ(
+            name, gt == label, ct, gt_img.affine, voxel_ml, z_axis)
+        row.update(fragment)
+        if centroid is not None:
+            centroids[name] = centroid
+
+    row["landmark"] = add_relative_positions(row, centroids)
+    preview = extract_preview(ct, gt, z_axis) if want_preview else None
+    return row, preview
+
+
+
+def robust_outliers(rows: list[dict], key: str,
+                    thresh: float = OUTLIER_Z) -> list[tuple[str, float, float]]:
+    
+    pairs = [(r["patient"], r[key]) for r in rows if isinstance(r.get(key), (int, float))]
+    if len(pairs) < 5:
+        return []
+    values = np.array([v for _, v in pairs], float)
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    if mad > 0:
+        scores = 0.6745 * (values - median) / mad
+    else:
+        sd = float(values.std())
+        if sd == 0:
+            return []
+        scores = (values - values.mean()) / sd
+    scores = np.clip(scores, -999, 999)
+    return [(pid, float(v), float(s)) for (pid, v), s in zip(pairs, scores) if abs(s) > thresh]
+
+
+def banner(title: str) -> None:
+    print(f"\n{'=' * 72}\n{title}\n{'=' * 72}")
+
+
+def report_geometry(rows: list[dict], summary: dict) -> None:
+    banner("GEOMETRY")
+    print(f"patients: {len(rows)}   with ground truth: {sum(1 for r in rows if r.get('has_gt'))}")
+    print(f"in-plane: {sorted({(r['shape_x'], r['shape_y']) for r in rows})}   "
+          f"slices: {min(r['shape_z'] for r in rows)}-{max(r['shape_z'] for r in rows)}")
+    for axis in "xyz":
+        values = [r[f"spacing_{axis}"] for r in rows]
+        print(f"spacing {axis}: {min(values):.3f} - {max(values):.3f} mm")
+
+    orientations: dict[str, int] = {}
+    for r in rows:
+        orientations[r["orientation"]] = orientations.get(r["orientation"], 0) + 1
+    print(f"orientations: {orientations}")
+    if len(orientations) > 1:
+        print(f"  {Y}!{Z} more than one orientation in the cohort - reorient before training")
+
+    combinations: dict[tuple, int] = {}
+    for r in rows:
+        key = (r["spacing_x"], r["spacing_y"], r["spacing_z"])
+        combinations[key] = combinations.get(key, 0) + 1
+    print("\ndistinct voxel geometries (from the CT, which is authoritative):")
+    for (sx, sy, sz), count in sorted(combinations.items()):
+        print(f"  {sx} x {sy} x {sz} mm   {count} patient(s)")
+
+    mismatched = [r["patient"] for r in rows if r.get("has_gt") and not r.get("affine_match", True)]
+    bad_spacing = [r for r in rows if r.get("has_gt") and not r.get("spacing_match", True)]
+    if bad_spacing:
+        example = bad_spacing[0]
+        print(f"\n  {R}!{Z} {len(bad_spacing)}/{sum(1 for r in rows if r.get('has_gt'))} label files "
+              f"carry spacing that contradicts their CT.")
+        print(f"      e.g. {example['patient']}: GT says "
+              f"{example['gt_spacing_x']} x {example['gt_spacing_y']} x {example['gt_spacing_z']} mm, "
+              f"CT says {example['spacing_x']} x {example['spacing_y']} x {example['spacing_z']} mm")
+        print(f"      every volume below uses the CT spacing. Run --fix-affine to write "
+              f"corrected label files.")
+    elif mismatched:
+        print(f"  {Y}!{Z} CT and GT affines differ (orientation or origin, not spacing): "
+              f"{', '.join(mismatched[:5])}")
+
+    summary["orientations"] = orientations
+    summary["affine_mismatch"] = mismatched
+    summary["spacing_mismatch"] = [r["patient"] for r in bad_spacing]
+    summary["voxel_geometries"] = {str(k): v for k, v in combinations.items()}
+
+
+def report_classes(rows: list[dict], class_names: dict[int, str], summary: dict) -> None:
+    banner("CLASSES")
+    names = list(class_names.values())
+    volumes = {n: np.array([r[f"{n}_ml"] for r in rows if f"{n}_ml" in r], float) for n in names}
+    largest = max((v.mean() for v in volumes.values() if v.size), default=0.0)
+
+    header = (f"{'label':<7}{'name':<12}{'median mL':>11}{'min':>9}{'max':>9}"
+              f"{'mean HU':>10}   looks like")
+    print(header + "\n" + "-" * len(header))
+
+    per_class: dict[str, dict] = {}
+    for label, name in class_names.items():
+        volume = volumes[name]
+        hu = np.array([r[f"{name}_hu_mean"] for r in rows if f"{name}_hu_mean" in r], float)
+        if volume.size == 0 or volume.max() == 0:
+            print(f"{label:<7}{name:<12}   absent from every patient")
+            per_class[name] = {"present": False}
+            continue
+        guess = guess_identity(float(np.median(hu)) if hu.size else 0.0,
+                               float(volume.mean()), largest)
+        print(f"{label:<7}{name:<12}{np.median(volume):>11.1f}{volume.min():>9.1f}"
+              f"{volume.max():>9.1f}{np.median(hu):>10.0f}   {D}{guess}{Z}")
+        per_class[name] = {
+            "present": True,
+            "median_ml": float(np.median(volume)),
+            "min_ml": float(volume.min()),
+            "max_ml": float(volume.max()),
+            "median_hu": float(np.median(hu)) if hu.size else None,
+        }
+    summary["per_class"] = per_class
+
+    total = float(np.median([r["shape_x"] * r["shape_y"] * r["shape_z"] for r in rows]))
+    foreground = {n: float(np.median([r[f"{n}_voxels"] for r in rows if f"{n}_voxels" in r] or [0]))
+                  for n in names}
+    fg_total = sum(foreground.values())
+    if fg_total:
+        share = ", ".join(f"{n} {100 * v / fg_total:.1f}%" for n, v in foreground.items() if v)
+        print(f"\nforeground is {100 * fg_total / total:.3f}% of all voxels. Within it: {share}")
+        print(f"{D}for reference the SegTHOR paper reports heart 70.7, aorta 23.0, "
+              f"esophagus 3.7, trachea 2.6 percent{Z}") 
+# Verified checking the misslabelled data
+    if all(n.startswith("class_") for n in class_names.values()):
+        guessed = []
+        for label, name in class_names.items():
+            info = per_class.get(name, {})
+            if not info.get("present"):
+                continue
+            hint = guess_identity(info["median_hu"] or 0.0, info["median_ml"], largest)
+            guessed.append(f"{label}=" + (hint.split("-> ")[-1] if "->" in hint else f"organ{label}"))
+        if guessed:
+            print(f"\nif those guesses look right, re-run with:")
+            print(f"    --classes \"{','.join(guessed)}\"")
+    summary["foreground_fraction"] = fg_total / total if total else None
+
+
+def report_flags(rows: list[dict], class_names: dict[int, str], summary: dict) -> list[str]:
+    banner("FLAGS")
+    flags: list[str] = []
+
+    for name in class_names.values():
+        window = PLAUSIBLE_HU.get(name)
+        if window:
+            for r in rows:
+                hu = r.get(f"{name}_hu_mean")
+                if isinstance(hu, (int, float)) and not (window[0] <= hu <= window[1]):
+                    flags.append(f"{r['patient']}: mean HU inside {name} is {hu:.0f}, outside "
+                                 f"the plausible {window[0]:.0f}..{window[1]:.0f} for that tissue")
+
+        for key, description in ((f"{name}_hu_mean", f"mean HU inside {name}"),
+                                 (f"{name}_ml", f"{name} volume in mL"),
+                                 (f"{name}_rel_dist", f"{name} distance from the landmark organ")):
+            for pid, value, score in robust_outliers(rows, key):
+                flags.append(f"{pid}: {description} = {value:.1f} (robust z {score:+.1f})")
+
+        for r in rows:
+            n_comp = r.get(f"{name}_ncomp")
+            frac = r.get(f"{name}_largest_frac")
+            if isinstance(n_comp, int) and n_comp > 1 and isinstance(frac, float) and frac < 0.99:
+                flags.append(f"{r['patient']}: {name} is {n_comp} separate pieces, "
+                             f"the largest holding {100 * frac:.1f}%")
+
+    for r in rows:
+        hu_max = r.get("hu_max")
+        if isinstance(hu_max, (int, float)) and hu_max > 3071:
+            flags.append(f"{r['patient']}: CT reaches {hu_max:.0f} HU, above the 3071 ceiling "
+                         f"of the normal range - metal artefact, clip your intensity window")
+
+    flags = sorted(set(flags))
+    if flags:
+        for flag in flags:
+            print(f"  {Y}-{Z} {flag}")
+        print(f"\n{len(flags)} flag(s). Open these patients in a 3D viewer before training.")
+    else:
+        print(f"  {G}none{Z}. Geometry, intensities and topology are internally consistent.")
+    summary["flags"] = flags
+    return flags
+
+
+def compare_label_files(pid: str, primary: Path, others: list[Path]) -> dict:
+  
+    import collections
+
+    a = np.asanyarray(nib.load(str(primary)).dataobj)
+    result: dict[str, object] = {}
+    for other in others:
+        b = np.asanyarray(nib.load(str(other)).dataobj)
+        if a.shape != b.shape:
+            print(f"  {pid}: {primary.name} {a.shape} and {other.name} {b.shape} "
+                  f"differ in shape, cannot compare")
+            continue
+        agree = float((a == b).mean())
+        changes = collections.Counter(zip(a[a != b].tolist(), b[a != b].tolist()))
+        print(f"  {pid}: {primary.name} vs {other.name} agree on {100 * agree:.3f}% of voxels")
+        for (old, new), count in changes.most_common(6):
+            print(f"      label {old} -> {new}   {count:,} voxels")
+        if not changes:
+            print("      identical")
+        result[other.name] = {
+            "agreement": agree,
+            "changes": {f"{o}->{nw}": int(c) for (o, nw), c in changes.most_common(10)},
+        }
+    return result
+
+
+def flagged_patients(flags: list[str]) -> set[str]:
+    
+    return {f.split(":", 1)[0].strip() for f in flags}
+
+
+
+
+def make_figures(rows: list[dict], previews: dict, class_names: dict[int, str],
+                 flagged: set[str], out_dir: Path) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"{Y}[!]{Z} matplotlib not installed, skipping figures")
+        return
+
+    labelled = [r for r in rows if r.get("has_gt") and "error" not in r]
+    if not labelled:
+        return
+    names = [n for n in class_names.values() if any(r.get(f"{n}_voxels") for r in labelled)]
+    short = [r["patient"].replace("Patient_", "") for r in labelled]
+    palette = plt.cm.tab10(np.linspace(0, 1, 10))
+    written: list[str] = []
+
+    def finish(fig, filename: str, title: str) -> None:
+        fig.suptitle(title)
+        fig.tight_layout()
+        fig.savefig(out_dir / filename, dpi=140)
+        plt.close(fig)
+        written.append(filename)
+
+    def mark(ax, x, y, pid: str) -> None:
+        if pid in flagged:
+            ax.scatter([x], [y], s=70, facecolors="none", edgecolors="crimson", lw=1.1, zorder=4)
+            ax.annotate(pid, (x, y), fontsize=7, color="crimson",
+                        xytext=(5, 4), textcoords="offset points")
+
+    
+    fig, ax = plt.subplots(1, 3, figsize=(13, 3.9))
+    jitter = np.random.default_rng(1)
+    sx = np.array([r["spacing_x"] for r in labelled])
+    sz = np.array([r["spacing_z"] for r in labelled])
+    ax[0].scatter(sx + jitter.normal(0, 0.004, sx.size), sz + jitter.normal(0, 0.012, sz.size),
+                  s=30, alpha=0.5, edgecolors="none")
+    counts: dict[tuple, int] = {}
+    for a_, b_ in zip(sx, sz):
+        counts[(a_, b_)] = counts.get((a_, b_), 0) + 1
+    for (a_, b_), k in counts.items():
+        ax[0].annotate(f"n={k}", (a_, b_), fontsize=7, xytext=(6, 6),
+                       textcoords="offset points", color="0.3")
+    ax[0].set_xlabel("in-plane spacing (mm)")
+    ax[0].set_ylabel("slice spacing (mm)")
+    ax[0].set_title("voxel size (jittered, n = patients)")
+    ax[1].bar(short, [r["shape_z"] for r in labelled])
+    ax[1].set_ylabel("slices")
+    ax[1].set_title("volume depth")
+    ax[2].bar(short, [r["shape_z"] * r["spacing_z"] for r in labelled], color="tab:orange")
+    ax[2].set_ylabel("scanned length (mm)")
+    ax[2].set_title("physical coverage")
+    for a in ax[1:]:
+        a.tick_params(axis="x", rotation=90, labelsize=6)
+    for a in ax:
+        a.grid(alpha=0.25)
+    finish(fig, "1_geometry.png", "Acquisition geometry")
+
+    
+    fig, ax = plt.subplots(figsize=(11, 4))
+    positions = range(len(labelled))
+    ax.vlines(positions, [r["hu_p01"] for r in labelled], [r["hu_p99"] for r in labelled],
+              lw=4, alpha=0.4, label="1st to 99th percentile")
+    ax.scatter(positions, [r["hu_p50"] for r in labelled], s=18, color="k",
+               zorder=3, label="median")
+    ax.set_xticks(list(positions))
+    ax.set_xticklabels(short, rotation=90, fontsize=6)
+    ax.set_ylabel("Hounsfield units")
+    ax.axhline(0, lw=0.6, color="0.5")
+    ax.grid(alpha=0.25, axis="y")
+    ax.legend(fontsize=8)
+    finish(fig, "2_intensity_global.png",
+           "Whole-volume HU per patient - a shifted patient argues for a fixed window")
+
+    
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4.4))
+    rng = np.random.default_rng(0)
+    for i, name in enumerate(names):
+        for panel, key in ((ax[0], f"{name}_ml"), (ax[1], f"{name}_hu_mean")):
+            data = [(r["patient"], r[key]) for r in labelled if r.get(key)]
+            if not data:
+                continue
+            xs = i + rng.uniform(-0.12, 0.12, len(data))
+            panel.scatter(xs, [v for _, v in data], s=22, alpha=0.75)
+            for x, (pid, value) in zip(xs, data):
+                mark(panel, x, value, pid)
+    if any(r.get(f"{n}_ml", 0) for n in names for r in labelled):
+        ax[0].set_yscale("log")
+    ax[0].set_ylabel("volume (mL, log scale)")
+    ax[1].set_ylabel("mean HU inside the mask")
+    ax[1].axhline(0, lw=0.6, color="0.5")
+    for a in ax:
+        a.set_xticks(range(len(names)))
+        a.set_xticklabels(names, rotation=20)
+        a.grid(alpha=0.25, axis="y")
+    finish(fig, "3_class_volume_and_hu.png", "Per-class size and tissue intensity")
+
+    
+    with_percentiles = [n for n in names if any(f"{n}_hu_p50" in r for r in labelled)]
+    if with_percentiles:
+        fig, ax = plt.subplots(1, len(with_percentiles),
+                               figsize=(4.3 * len(with_percentiles), 4), squeeze=False)
+        for a, name in zip(ax[0], with_percentiles):
+            subset = [r for r in labelled if f"{name}_hu_p50" in r]
+            x = range(len(subset))
+            a.vlines(x, [r[f"{name}_hu_p05"] for r in subset],
+                     [r[f"{name}_hu_p95"] for r in subset], lw=3, alpha=0.3)
+            a.vlines(x, [r[f"{name}_hu_p25"] for r in subset],
+                     [r[f"{name}_hu_p75"] for r in subset], lw=6)
+            a.scatter(x, [r[f"{name}_hu_p50"] for r in subset], s=14, color="k", zorder=3)
+            a.set_xticks(list(x))
+            a.set_xticklabels([r["patient"].replace("Patient_", "") for r in subset],
+                              rotation=90, fontsize=6)
+            a.set_title(name)
+            a.set_ylabel("HU")
+            a.grid(alpha=0.25, axis="y")
+        finish(fig, "4_class_hu_spread.png",
+               "HU inside each organ - two clusters means contrast versus non-contrast scans")
+
+    
+    fig, ax = plt.subplots(figsize=(11, 0.4 * len(labelled) + 2.2))
+    for i, r in enumerate(labelled):
+        ax.barh(i, r["shape_z"], color="0.92", height=0.82)
+        span = 0.66
+        step = span / max(len(names), 1)
+        for c, name in enumerate(names):
+            if f"{name}_z_min" not in r:
+                continue
+            z0, z1 = r[f"{name}_z_min"], r[f"{name}_z_max"]
+            offset = (c - (len(names) - 1) / 2) * step
+            ax.barh(i + offset, z1 - z0, left=z0, height=step * 0.8,
+                    color=palette[c], label=name if i == 0 else None)
+    ax.set_yticks(range(len(labelled)))
+    ax.set_yticklabels(short, fontsize=7)
+    ax.set_xlabel("slice index   (grey bar is the full scan)")
+    ax.invert_yaxis()
+    ax.legend(fontsize=8, ncol=max(1, len(names)))
+    ax.grid(alpha=0.25, axis="x")
+    finish(fig, "5_organ_extent.png",
+           "Labelled extent along the body - short bars mean truncated ground truth")
+
+    
+    landmark = next((r.get("landmark") for r in labelled if r.get("landmark")), None)
+    relative = [n for n in names if n != landmark and any(f"{n}_rel_x" in r for r in labelled)]
+    if relative:
+        fig, ax = plt.subplots(1, len(relative), figsize=(4.4 * len(relative), 4.2), squeeze=False)
+        for a, name in zip(ax[0], relative):
+            subset = [r for r in labelled if f"{name}_rel_x" in r]
+            xs = [r[f"{name}_rel_x"] for r in subset]
+            ys = [r[f"{name}_rel_y"] for r in subset]
+            a.scatter(xs, ys, s=24, alpha=0.8)
+            for x, y, r in zip(xs, ys, subset):
+                mark(a, x, y, r["patient"])
+            a.set_title(f"{name} relative to {landmark}")
+            a.set_xlabel("x offset (mm)")
+            a.set_ylabel("y offset (mm)")
+            a.grid(alpha=0.25)
+        finish(fig, "6_relative_position.png",
+               "Organ offsets from a landmark - only flagged patients are circled")
+
+    # --- 7. one labelled slice per patient ----------------------------------
+    if previews:
+        columns = min(5, len(previews))
+        rows_n = int(np.ceil(len(previews) / columns))
+        fig, ax = plt.subplots(rows_n, columns,
+                               figsize=(2.5 * columns, 2.6 * rows_n), squeeze=False)
+        for a in ax.ravel():
+            a.axis("off")
+        for i, (pid, (ct_slice, gt_slice)) in enumerate(sorted(previews.items())):
+            a = ax[i // columns][i % columns]
+            a.imshow(np.rot90(ct_slice), cmap="gray", vmin=-1000, vmax=300)
+            for c, label in enumerate(class_names):
+                mask = np.rot90(gt_slice) == label
+                if mask.any():
+                    a.contour(mask.astype(float), levels=[0.5],
+                              colors=[palette[c]], linewidths=0.8)
+            a.set_title(pid.replace("Patient_", "P"), fontsize=8,
+                        color="crimson" if pid in flagged else "black")
+        handles = [plt.Line2D([], [], color=palette[c], lw=1.5, label=name)
+                   for c, name in enumerate(class_names.values())]
+        fig.legend(handles=handles, loc="lower center", ncol=len(handles), fontsize=8,
+                   frameon=False, bbox_to_anchor=(0.5, -0.01))
+        finish(fig, "7_slice_overview.png",
+               "Busiest labelled slice per patient - the eyeball check")
+
+    print(f"[i] {len(written)} figures in {out_dir}: {', '.join(written)}")
+
+
+
+def fix_label_affines(patients: list[tuple[str, Path, Path | None]], dest: Path) -> None:
+
+    dest.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for pid, ct_path, gt_path in patients:
+        if gt_path is None:
+            continue
+        ct_img = nib.load(str(ct_path))
+        gt_img = nib.load(str(gt_path))
+        data = np.asanyarray(gt_img.dataobj)
+        if data.shape != ct_img.shape[:3]:
+            print(f"  {Y}skipped{Z} {pid}: label shape {data.shape} != CT {ct_img.shape[:3]}")
+            continue
+        header = ct_img.header.copy()
+        header.set_data_dtype(gt_img.get_data_dtype())
+        folder = dest / pid
+        folder.mkdir(exist_ok=True)
+        nib.save(nib.Nifti1Image(data, ct_img.affine, header), folder / gt_path.name)
+        written += 1
+    print(f"[i] wrote {written} corrected label file(s) under {dest}")
+
+
+def write_outputs(rows: list[dict], summary: dict, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fields: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    with (out_dir / "profile.csv").open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    with (out_dir / "profile.json").open("w") as fh:
+        json.dump({"summary": summary, "patients": rows}, fh, indent=2, default=str)
+    print(f"\n[i] wrote {out_dir / 'profile.csv'} and {out_dir / 'profile.json'}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--zip", type=Path, help="the course zip, e.g. data/segthor_part1.zip")
+    source.add_argument("--data-dir", type=Path, help="a folder of Patient_XX directories")
+    parser.add_argument("--out", type=Path, default=Path("segthor_profile"))
+    parser.add_argument("--classes", type=str, default=None,
+                        help='name the labels yourself, e.g. "1=aorta,2=heart,3=trachea"')
+    parser.add_argument("--gt-name", type=str, default="GT.nii.gz",
+                        help="which label file to profile when a folder holds several, "
+                             "e.g. GT2.nii.gz")
+    parser.add_argument("--limit", type=int, default=0, help="only profile the first N patients")
+    parser.add_argument("--plots", action="store_true", help="also write figures")
+    parser.add_argument("--fix-affine", type=Path, default=None, metavar="DIR",
+                        help="write copies of the label files carrying the CT geometry")
+    args = parser.parse_args()
+
+    if ndimage is None:
+        print(f"{Y}[!]{Z} scipy missing, skipping connected-component checks")
+
+    root = resolve_input(args.zip, args.data_dir)
+    patients, extra_labels = find_patients(root, args.gt_name)
+    if not patients:
+        sys.exit(f"no .nii.gz volumes found under {root}")
+    if args.limit:
+        patients = patients[: args.limit]
+    print(f"[i] found {len(patients)} patients under {root}, profiling {args.gt_name}")
+    if extra_labels:
+        print(f"{Y}[!]{Z} {len(extra_labels)} patient(s) carry more than one label file:")
+        for pid, paths in sorted(extra_labels.items()):
+            print(f"      {pid}: also {', '.join(p.name for p in paths)}")
+
+    override = parse_class_override(args.classes) if args.classes else None
+    class_names = decide_class_names(scan_label_values(patients), override)
+
+    rows: list[dict] = []
+    previews: dict = {}
+    for i, (pid, ct_path, gt_path) in enumerate(patients, 1):
+        print(f"  [{i:>3}/{len(patients)}] {pid}", flush=True)
+        try:
+            row, preview = profile_patient(pid, ct_path, gt_path, class_names, args.plots)
+            rows.append(row)
+            if preview is not None:
+                previews[pid] = preview
+        except Exception as exc:
+            print(f"      {R}failed{Z}: {exc}")
+            rows.append({"patient": pid, "error": str(exc)})
+
+    usable = [r for r in rows if "error" not in r]
+    labelled = [r for r in usable if r.get("has_gt")]
+    summary: dict = {
+        "n_patients": len(rows),
+        "n_labelled": len(labelled),
+        "class_names": {str(k): v for k, v in class_names.items()},
+    }
+    if usable:
+        report_geometry(usable, summary)
+    flags: list[str] = []
+    if labelled:
+        report_classes(labelled, class_names, summary)
+        flags = report_flags(labelled, class_names, summary)
+
+    if extra_labels:
+        banner("LABEL FILES COMPARED")
+        comparisons = {}
+        by_id = {pid: gt for pid, _, gt in patients}
+        for pid, others in sorted(extra_labels.items()):
+            primary = by_id.get(pid)
+            if primary is not None:
+                comparisons[pid] = compare_label_files(pid, primary, others)
+        summary["label_file_comparison"] = comparisons
+
+    write_outputs(rows, summary, args.out)
+    if args.fix_affine:
+        banner("CORRECTED LABEL FILES")
+        fix_label_affines(patients, args.fix_affine)
+    if args.plots:
+        make_figures(rows, previews, class_names, flagged_patients(flags), args.out)
+    return 1 if flags else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
