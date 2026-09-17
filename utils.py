@@ -176,3 +176,21 @@ def union(a: Tensor, b: Tensor) -> Tensor:
     assert sset(res, [0, 1])
 
     return res
+
+def average_hausdorff_distance(a: Tensor, b: Tensor) -> float:
+    assert a.shape == b.shape
+    assert sset(a, [0, 1])
+    assert sset(b, [0, 1])
+
+    # get pixel coordinates
+    a_coords = torch.nonzero(a)
+    b_coords = torch.nonzero(b)
+
+    # compute the pairwise distances between the coordinates
+    dh_ab = torch.cdist(a_coords.float(), b_coords.float())
+    dh_ba = torch.cdist(b_coords.float(), a_coords.float())
+
+    # compute the average Hausdorff distance
+    dist = (dh_ab.min(dim=1).values.mean() + dh_ba.min(dim=1).values.mean()) / 2.0
+
+    return dist
