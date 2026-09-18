@@ -43,7 +43,7 @@ class Config:
 
     mode: Literal["partial", "full"] = "full"
 
-    gpu: bool = False
+    gpu: bool = True
 
     num_workers: int = 5
 

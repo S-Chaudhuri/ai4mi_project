@@ -302,13 +302,18 @@ def runTraining(config: Config):
                     epoch_acc = total_correct / total_pixels
                     d, p = log_dice[e, :j], log_presence[e, :j]
                     postfix_dict: dict[str, str] = {
-                        "Dice": f"{gated_dice(d[:, 1:], p[:, 1:]):05.3f}",
+                        "Dice": f"{d[:, 1:].mean():05.3f}",
+                        "gDice": f"{gated_dice(d[:, 1:], p[:, 1:]):05.3f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                         "Acc": f"{epoch_acc:05.3f}",
                     }
                     if num_classes > 2:
                         postfix_dict |= {
-                            f"Dice-{k}": f"{gated_dice(d[:, k], p[:, k]):05.3f}"
+                            f"Dice-{k}": f"{d[:, k].mean():05.3f}"
+                            for k in range(1, num_classes)
+                        }
+                        postfix_dict |= {
+                            f"gDice-{k}": f"{gated_dice(d[:, k], p[:, k]):05.3f}"
                             for k in range(1, num_classes)
                         }
                     tq_iter.set_postfix(postfix_dict)
@@ -321,22 +326,26 @@ def runTraining(config: Config):
         metrics = {
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
-            "train/dice": gated_dice(
+            "train/dice": log_dice_tra[e, :, 1:].mean().item(),
+            "train/dice_gated": gated_dice(
                 log_dice_tra[e, :, 1:], log_presence_tra[e, :, 1:]
             ).item(),
             "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
-            "val/dice": gated_dice(
+            "val/dice": log_dice_val[e, :, 1:].mean().item(),
+            "val/dice_gated": gated_dice(
                 log_dice_val[e, :, 1:], log_presence_val[e, :, 1:]
             ).item(),
             "val/acc": acc_val,
         }
         if num_classes > 2:
             for k in range(1, num_classes):
-                metrics[f"train/dice_{k}"] = gated_dice(
+                metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
+                metrics[f"train/dice_{k}_gated"] = gated_dice(
                     log_dice_tra[e, :, k], log_presence_tra[e, :, k]
                 ).item()
-                metrics[f"val/dice_{k}"] = gated_dice(
+                metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
+                metrics[f"val/dice_{k}_gated"] = gated_dice(
                     log_dice_val[e, :, k], log_presence_val[e, :, k]
                 ).item()
         wandb.log(metrics)
