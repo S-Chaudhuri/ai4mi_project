@@ -70,6 +70,13 @@ def img_transform(img):
     return img
 
 
+def noised_img_transform(img, p: float, sigma: float):
+    img = img_transform(img)
+    if np.random.random() < p:
+        img = img + torch.randn_like(img) * sigma
+    return img.clamp(0.0, 1.0)
+
+
 def gt_transform(K, img):
     img = np.array(img)[...]
     # The idea is that the classes are mapped to {0, 255} for binary cases
@@ -124,7 +131,9 @@ def setup(
     train_set = SliceDataset(
         "train",
         data_root_dir,
-        img_transform=img_transform,
+        img_transform=partial(
+            noised_img_transform, p=config.noise_prob, sigma=config.noise_level
+        ),
         gt_transform=partial(gt_transform, num_classes),
         debug=config.debug,
     )
@@ -159,13 +168,21 @@ def setup(
 
 def get_loss_func(config: Config, num_classes: int):
     if config.mode == "full":
-        return CrossEntropy(
-            idk=list(range(num_classes))
-        )  # Supervise both background and foreground
-    elif config.mode in ["partial"] and config.dataset.name == "SEGTHOR":
-        return CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+        idk = list(range(num_classes))
+    elif config.mode in ["partial"] and config.dataset == "SEGTHOR":
+        idk = [0, 1, 3, 4]
     else:
         raise ValueError(config.mode, config.dataset)
+
+    if config.loss == "ce":
+        return CrossEntropy(idk=idk)
+    elif config.loss == "dice_ce":
+        dice_idk = [c for c in idk if c != 0]
+        return CrossEntropyPlusDice(
+            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.dice_weight
+        )
+    else:
+        raise ValueError(config.loss)
 
 
 def runTraining(config: Config):
@@ -193,24 +210,7 @@ def runTraining(config: Config):
     if config.wandb_watch:
         wandb.watch(net, log="all", log_freq=100)
 
-    if config.mode == "full":
-        idk = list(range(num_classes))
-    elif config.mode in ["partial"] and config.dataset == "SEGTHOR":
-        idk = [0, 1, 3, 4]
-    else:
-        raise ValueError(config.mode, config.dataset)
-
     loss_fn = get_loss_func(config, num_classes)
-
-    if config.loss == "ce":
-        loss_fn = CrossEntropy(idk=idk)
-    elif config.loss == "dice_ce":
-        dice_idk = [c for c in idk if c != 0]
-        loss_fn = CrossEntropyPlusDice(
-            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.dice_weight
-        )
-    else:
-        raise ValueError(config.loss)
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
@@ -298,9 +298,9 @@ def runTraining(config: Config):
                         log_hd95[e, j : j + batch_size, :] = hd95_coef(
                             pred_seg, gt, spacing_mm=(1, 1)
                         )
-                        log_present[e, j : j + batch_size, :] = gt.sum(
-                            dim=(-2, -1)
-                        ) > 0  # Per-sample, per-class: is the class in the gt?
+                        log_present[e, j : j + batch_size, :] = (
+                            gt.sum(dim=(-2, -1)) > 0
+                        )  # Per-sample, per-class: is the class in the gt?
 
                         # Pixel-wise accuracy
                         predicted_classes = pred_probs.argmax(dim=1)  # (B, W, H)

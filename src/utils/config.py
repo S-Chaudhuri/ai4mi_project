@@ -67,6 +67,9 @@ class Config:
     dropout: float = 0.01
     temperature: float = 1
 
+    noise_prob: float = 0.5
+    noise_level: float = 0.05
+
 
 def instantiate_dataclass(cls, data: dict):
     if not dataclasses.is_dataclass(cls):
