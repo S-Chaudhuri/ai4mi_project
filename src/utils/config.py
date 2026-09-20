@@ -70,6 +70,8 @@ class Config:
     noise_prob: float = 0.5
     noise_level: float = 0.05
 
+    notes: Optional[str] = None
+
 
 def instantiate_dataclass(cls, data: dict):
     if not dataclasses.is_dataclass(cls):

@@ -193,16 +193,17 @@ def runTraining(config: Config):
     )
 
     result_dir = config.dest or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d/%m/%Y, %H:%M:%S')}"
+        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
     )
     result_dir.mkdir(parents=True, exist_ok=True)
     scaler = torch.amp.GradScaler("cuda", enabled=config.gpu)
 
     wandb.init(
         entity="ai-for-medical-imaging",
-        project=f"{config.dataset}-baseline",
+        project=f"{config.dataset.name}",
         config=dataclasses.asdict(config),
         dir=get_root_dir() / "results" / "wandb",
+        notes=config.notes,
     )
 
     # Adds histogram of the gradients and parameters
