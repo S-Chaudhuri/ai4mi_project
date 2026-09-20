@@ -267,7 +267,7 @@ def runTraining(config: Config):
                     with torch.autocast(device_type="cuda" if config.gpu else "cpu"):
                         pred_logits = net(img)
                         pred_probs = F.softmax(
-                            config.temperature * pred_logits, dim=1
+                            config.temperature * pred_logits.float(), dim=1
                         )  # 1 is the temperature parameter
 
                         # Metrics computation, not used for training
