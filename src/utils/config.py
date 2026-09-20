@@ -22,6 +22,10 @@ class DatasetConfig:
     retains: int = 5
     fold: int = 0
 
+    # Augmentations from utils/augmentations.py to add an augmented copy of every
+    # training slice, e.g. --dataset.augment affine elastic gamma noise
+    augment: list[str] = field(default_factory=list)
+
 
 @dataclass
 class ModelConfig:

@@ -124,6 +124,7 @@ def setup(
         data_root_dir,
         img_transform=img_transform,
         gt_transform=partial(gt_transform, num_classes),
+        augment=config.dataset.augment,
         debug=config.debug,
     )
     train_loader = DataLoader(
