@@ -33,6 +33,7 @@ from PIL import Image
 from tqdm import tqdm
 from torch import Tensor, einsum
 from scipy import ndimage
+from scipy.spatial import cKDTree
 
 
 tqdm_ = partial(
@@ -230,7 +231,10 @@ def _surface_coords(mask: np.ndarray, spacing_mm: tuple) -> Tensor:
 
 
 def _asymmetric_distance(a_coords: Tensor, b_coords: Tensor) -> Tensor:
-    return torch.cdist(a_coords, b_coords).min(dim=1).values
+    a = a_coords.numpy().astype(np.float64)
+    b = b_coords.numpy().astype(np.float64)
+    dist, _ = cKDTree(b).query(a, k=1)
+    return torch.from_numpy(dist.astype(np.float32))
 
 
 def hausdorff_distance(
@@ -243,8 +247,10 @@ def hausdorff_distance(
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
 
-    q = percentile / 100.0
+    if percentile >= 100.0:
+        return torch.max(dist_ab.max(), dist_ba.max()).item()
 
+    q = percentile / 100.0
     return torch.max(torch.quantile(dist_ab, q), torch.quantile(dist_ba, q)).item()
 
 

@@ -54,6 +54,8 @@ from src.utils.utils import (
     seed_all,
     tqdm_,
     dice_coef,
+    gated_dice,
+    hd95_coef,
     save_images,
 )
 
@@ -219,6 +221,20 @@ def runTraining(config: Config):
     log_dice_val: Tensor = torch.zeros(
         (config.epochs, len(val_loader.dataset), num_classes)  # type: ignore
     )
+    log_hd95_tra: Tensor = torch.zeros(
+        (config.epochs, len(train_loader.dataset), num_classes)  # type: ignore
+    )
+    log_hd95_val: Tensor = torch.zeros(
+        (config.epochs, len(val_loader.dataset), num_classes)  # type: ignore
+    )
+    log_present_tra: Tensor = torch.zeros(
+        (config.epochs, len(train_loader.dataset), num_classes),  # type: ignore
+        dtype=torch.bool,
+    )
+    log_present_val: Tensor = torch.zeros(
+        (config.epochs, len(val_loader.dataset), num_classes),  # type: ignore
+        dtype=torch.bool,
+    )
 
     best_dice: float = 0
 
@@ -235,6 +251,8 @@ def runTraining(config: Config):
                     loader = train_loader
                     log_loss = log_loss_tra
                     log_dice = log_dice_tra
+                    log_hd95 = log_hd95_tra
+                    log_present = log_present_tra
                 case "val":
                     net.eval()
                     opt = None
@@ -243,6 +261,8 @@ def runTraining(config: Config):
                     loader = val_loader
                     log_loss = log_loss_val
                     log_dice = log_dice_val
+                    log_hd95 = log_hd95_val
+                    log_present = log_present_val
                 case _:
                     raise  # Should never be reached, but needed to silence ide warn
 
@@ -275,6 +295,12 @@ def runTraining(config: Config):
                         log_dice[e, j : j + batch_size, :] = dice_coef(
                             pred_seg, gt
                         )  # One DSC value per sample and per class
+                        log_hd95[e, j : j + batch_size, :] = hd95_coef(
+                            pred_seg, gt, spacing_mm=(1, 1)
+                        )
+                        log_present[e, j : j + batch_size, :] = gt.sum(
+                            dim=(-2, -1)
+                        ) > 0  # Per-sample, per-class: is the class in the gt?
 
                         # Pixel-wise accuracy
                         predicted_classes = pred_probs.argmax(dim=1)  # (B, W, H)
@@ -307,9 +333,13 @@ def runTraining(config: Config):
 
                     j += batch_size  # Keep in mind that _in theory_, each batch might have a different size
                     # For the DSC average: do not take the background class (0) into account:
+                    # HD95 and gated dice are only averaged over samples where the class is in the gt
+                    present = log_present[e, :j, 1:]
                     epoch_acc = total_correct / total_pixels
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
+                        "GDice": f"{gated_dice(log_dice[e, :j, 1:], present):05.3f}",
+                        "HD95": f"{gated_dice(log_hd95[e, :j, 1:], present):05.2f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                         "Acc": f"{epoch_acc:05.3f}",
                     }
@@ -329,15 +359,33 @@ def runTraining(config: Config):
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
             "train/dice": log_dice_tra[e, :, 1:].mean().item(),
+            "train/gated_dice": gated_dice(
+                log_dice_tra[e, :, 1:], log_present_tra[e, :, 1:]
+            ).item(),
+            "train/hd95": gated_dice(
+                log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
+            ).item(),
             "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
             "val/dice": log_dice_val[e, :, 1:].mean().item(),
+            "val/gated_dice": gated_dice(
+                log_dice_val[e, :, 1:], log_present_val[e, :, 1:]
+            ).item(),
+            "val/hd95": gated_dice(
+                log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
+            ).item(),
             "val/acc": acc_val,
         }
         if num_classes > 2:
             for k in range(1, num_classes):
                 metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
                 metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
+                metrics[f"train/hd95_{k}"] = gated_dice(
+                    log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+                ).item()
+                metrics[f"val/hd95_{k}"] = gated_dice(
+                    log_hd95_val[e, :, k], log_present_val[e, :, k]
+                ).item()
         wandb.log(metrics)
 
         # Scheduler at the end of each epoch
@@ -348,6 +396,8 @@ def runTraining(config: Config):
         np.save(result_dir / "dice_tra.npy", log_dice_tra)
         np.save(result_dir / "loss_val.npy", log_loss_val)
         np.save(result_dir / "dice_val.npy", log_dice_val)
+        np.save(result_dir / "hd95_tra.npy", log_hd95_tra)
+        np.save(result_dir / "hd95_val.npy", log_hd95_val)
 
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
