@@ -1,10 +1,12 @@
 import SimpleITK as sitk
 from pathlib import Path
-import sys
 
-target_spacing = (0.98, 0.98, 2.5)
+TARGET_SPACING = (0.98, 0.98, 2.5)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_INPUT_DIR = PROJECT_ROOT / "data" / "segthor_part1"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "SEGTHOR_resampled"
 
-def resample_image(src_dir: Path, tar_dir: Path, target_spacing = target_spacing):
+def resample_image(src_dir: Path, tar_dir: Path, target_spacing = TARGET_SPACING):
     """
     Resample a 3D medical image to a specified target spacing.
 
@@ -58,3 +60,37 @@ def resample_image(src_dir: Path, tar_dir: Path, target_spacing = target_spacing
 
     # Return the resampled image
     return resampled_image
+
+
+def resample_folder(input_dir: Path = DEFAULT_INPUT_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR, target_spacing=TARGET_SPACING,):
+    """Resample every NIfTI image while preserving the input folder structure."""
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_paths = sorted(
+        path
+        for path in input_dir.rglob("*")
+        if path.is_file() and path.name.lower().endswith((".nii", ".nii.gz"))
+    )
+
+    if not image_paths:
+        raise FileNotFoundError(f"No NIfTI images found in {input_dir}")
+
+    for source_path in image_paths:
+        target_path = output_dir / source_path.relative_to(input_dir)
+        resample_image(
+            src_dir=source_path,
+            tar_dir=target_path,
+            target_spacing=target_spacing,
+        )
+
+    print(f"Resampled {len(image_paths)} image(s) to {output_dir}")
+
+
+def main() -> None:
+    resample_folder()
+
+
+if __name__ == "__main__":
+    main()
