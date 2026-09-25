@@ -200,3 +200,85 @@ class BoxDataset(Dataset):
             data_dict["gts"] = gt
  
         return data_dict
+
+
+def make_3d_dataset(root, subset) -> list[tuple[Path, Path | None]]:
+
+    assert subset in ["train", "val", "test"]
+ 
+    root = Path(root)
+    print(f"> {root=}")
+ 
+    img_path = root / subset / "img"
+    full_path = root / subset / "gt"
+ 
+    images: list[Path] = sorted(img_path.glob("*.npy"))
+    full_labels: list[Path | None]
+    if subset != "test":
+        full_labels = sorted(full_path.glob("*.npy"))
+    else:
+        full_labels = [None] * len(images)
+ 
+    if len(images) != len(full_labels):
+        raise ValueError("Not the same number of images and labels in dataset")
+ 
+    return list(zip(images, full_labels))
+ 
+ 
+class BoxDataset(Dataset):
+    
+    def __init__(
+        self,
+        subset,
+        root_dir,
+        img_transform,
+        gt_transform,
+        box_size: tuple[int, int, int] = (132, 132, 128),
+        augment=False,
+        equalize=False,
+        debug=False,
+    ):
+        self.root_dir: str = root_dir
+        self.img_transform: Callable = img_transform
+        self.gt_transform: Callable = gt_transform
+        self.augmentation: bool = augment
+        self.equalize: bool = equalize
+        self.box_size: tuple[int, int, int] = tuple(box_size)
+ 
+        self.test_mode: bool = subset == "test"
+ 
+        self.files = make_3d_dataset(root_dir, subset)
+        if debug:
+            self.files = self.files[:10]
+ 
+        print(
+            f">> Created {subset} dataset with {len(self)} boxes "
+            f"of size {self.box_size}..."
+        )
+ 
+    def __len__(self):
+        return len(self.files)
+ 
+    def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
+        img_path, gt_path = self.files[index]
+ 
+        # Swap np.load(...) for nibabel.load(path).get_fdata() if using NIfTI.
+        img_np = np.load(img_path)
+        img: Tensor = self.img_transform(img_np)
+ 
+        data_dict = {"images": img, "stems": img_path.stem}
+ 
+        if not self.test_mode:
+            gt_np = np.load(gt_path)
+            gt: Tensor = self.gt_transform(gt_np)
+ 
+            _, img_depth, img_height, img_width = img.shape
+            _, gt_depth, gt_height, gt_width = gt.shape
+            assert (gt_depth, gt_height, gt_width) == (img_depth, img_height, img_width)
+            assert (img_depth, img_height, img_width) == self.box_size, (
+                f"Expected box size {self.box_size}, got {(img_depth, img_height, img_width)}"
+            )
+ 
+            data_dict["gts"] = gt
+ 
+        return data_dict
