@@ -40,7 +40,7 @@ class CrossEntropy:
         log_p = (pred_softmax[:, self.idk, ...] + 1e-10).log()
         mask = weak_target[:, self.idk, ...].float()
 
-        loss = -einsum("bkwh,bkwh->", mask, log_p)
+        loss = -einsum("bkdwh,bkdwh->", mask, log_p)
         loss /= mask.sum() + 1e-10
 
         return loss
@@ -62,8 +62,8 @@ class DiceLoss:
         p = pred_softmax[:, self.idk, ...]
         g = weak_target[:, self.idk, ...].float()
 
-        intersection = (p * g).sum(dim=(2, 3))
-        union = p.sum(dim=(2, 3)) + g.sum(dim=(2, 3))
+        intersection = (p * g).sum(dim=(2, 3, 4))
+        union = p.sum(dim=(2, 3, 4)) + g.sum(dim=(2, 3, 4))
 
         dice_score = (2 * intersection + 1e-10) / (union + 1e-10)
         loss = 1 - dice_score.mean()
