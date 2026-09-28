@@ -23,7 +23,7 @@
 
 from torch import einsum
 
-from utils.utils import simplex, sset
+from src.utils.utils import simplex, sset
 
 
 class CrossEntropy:
