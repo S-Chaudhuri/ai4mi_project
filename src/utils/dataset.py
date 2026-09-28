@@ -21,16 +21,17 @@
 # SOFTWARE.
 
 from pathlib import Path
-from typing import Callable, Union
-
-
+import random
 import torch
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
 from torch.version import debug
-from typing import Callable, Optional, Union
+from typing import Callable, Union, List, Tuple, Dict, Optional
 import numpy as np
+from utils.utils import class2one_hot
+from collections import defaultdict
+
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -102,103 +103,130 @@ class SliceDataset(Dataset):
         return data_dict
     
  
-def make_3d_dataset(root, subset) -> list[tuple[Path, Path | None]]:
-    """
-    3D counterpart of make_dataset(). Same directory layout convention:
-        root/subset/img/*.npy
-        root/subset/gt/*.npy
- 
-    Assumes each *.npy file holds one full volumetric box (e.g. 132x132x128).
-    If your boxes are stored as NIfTI (.nii.gz) instead, just change the glob
-    pattern below (e.g. "*.nii.gz") and load with nibabel in the Dataset.
-    """
-    assert subset in ["train", "val", "test"]
- 
-    root = Path(root)
-    print(f"> {root=}")
- 
-    img_path = root / subset / "img"
-    full_path = root / subset / "gt"
- 
-    images: list[Path] = sorted(img_path.glob("*.npy"))
-    full_labels: list[Path | None]
-    if subset != "test":
-        full_labels = sorted(full_path.glob("*.npy"))
-    else:
-        full_labels = [None] * len(images)
- 
-    if len(images) != len(full_labels):
-        raise ValueError("Not the same number of images and labels in dataset")
- 
-    return list(zip(images, full_labels))
- 
- 
+def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, any]]:
+    root_dir = Path(root_dir)
+    
+    # 1. Resolve image and ground-truth directories
+    subset_dir = root_dir / subset
+    img_dir = subset_dir / "img" if (subset_dir / "img").exists() else subset_dir / "images"
+    gt_dir = subset_dir / "gt" if (subset_dir / "gt").exists() else subset_dir / "masks"
+
+    if not img_dir.exists() or not gt_dir.exists():
+        print(f"Error: Expected image/gt folders not found in {subset_dir}")
+        return []
+
+    # 2. Group PNG files by Patient ID (e.g., 'Patient_01_042.png' -> key 'Patient_01')
+    img_groups = defaultdict(list)
+    gt_groups = defaultdict(list)
+
+    for img_path in sorted(img_dir.glob("*.png")):
+        # Extract patient ID prefix (e.g., "Patient_01" from "Patient_01_045.png")
+        pid = "_".join(img_path.stem.split("_")[:2])
+        img_groups[pid].append(img_path)
+
+    for gt_path in sorted(gt_dir.glob("*.png")):
+        pid = "_".join(gt_path.stem.split("_")[:2])
+        gt_groups[pid].append(gt_path)
+
+    # 3. Pair 3D patient volumes
+    items = []
+    for pid in sorted(img_groups.keys()):
+        if pid not in gt_groups:
+            print(f"[Warning] Skipping {pid}: No matching GT slices found.")
+            continue
+
+        img_slices = sorted(img_groups[pid])
+        gt_slices = sorted(gt_groups[pid])
+
+        if len(img_slices) != len(gt_slices):
+            print(f"[Warning] Mismatch for {pid}: {len(img_slices)} images vs {len(gt_slices)} GTs.")
+            continue
+
+        items.append({
+            "stem": pid,
+            "images": img_slices,
+            "gts": gt_slices
+        })
+
+    print(f"Successfully matched {len(items)} 3D patient volumes between images and GT.")
+    return items
+
+
 class BoxDataset(Dataset):
-    """
-    3D counterpart of SliceDataset. Yields fixed-size volumetric boxes
-    (e.g. 132x132x128) instead of 2D slices, for use with a 3D-conv network.
- 
-    img_transform / gt_transform are expected to take a numpy array
-    (D, H, W) and return a Tensor shaped (C, D, H, W) -- same role as
-    the PIL-based transforms in the 2D version, just swapped for whatever
-    3D-capable transform pipeline you're using (e.g. torchio, MONAI, or
-    your own numpy/torch functions).
-    """
- 
     def __init__(
         self,
-        subset,
-        root_dir,
-        img_transform,
-        gt_transform,
-        box_size: tuple[int, int, int] = (132, 132, 128),
-        augment=False,
-        equalize=False,
-        debug=False,
+        subset: str,
+        root_dir: Path,
+        img_transform=None,
+        gt_transform=None,
+        sub_box_size: Optional[Tuple[int, int, int]] = None,  # e.g., (128, 132, 132)
+        debug: bool = False,
     ):
-        self.root_dir: str = root_dir
-        self.img_transform: Callable = img_transform
-        self.gt_transform: Callable = gt_transform
-        self.augmentation: bool = augment
-        self.equalize: bool = equalize
-        self.box_size: tuple[int, int, int] = tuple(box_size)
- 
-        self.test_mode: bool = subset == "test"
- 
-        self.files = make_3d_dataset(root_dir, subset)
-        if debug:
-            self.files = self.files[:10]
- 
-        print(
-            f">> Created {subset} dataset with {len(self)} boxes "
-            f"of size {self.box_size}..."
+        self.root_dir = Path(root_dir)
+        self.subset = subset
+        self.img_transform = img_transform
+        self.gt_transform = gt_transform
+        self.sub_box_size = sub_box_size
+        self.debug = debug
+
+        self.items = make_3d_dataset(self.root_dir, self.subset)
+        if self.debug:
+            self.items = self.items[:10]
+
+        print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
+        if self.sub_box_size:
+            print(f"   Using sub-box extraction size: {self.sub_box_size}")
+
+    def __len__(self) -> int:
+        """Returns total number of 3D patient volume samples in dataset."""
+        return len(self.items)
+
+    def _load_volume(self, slice_paths: List[Path]) -> np.ndarray:
+        """Loads a list of 2D PNG file paths and stacks them along the depth axis (axis=0).
+        
+        Output shape: (D, H, W)
+        """
+        
+        slices = [np.array(Image.open(p)) for p in slice_paths]
+        return np.stack(slices, axis=0)
+    
+    def _extract_sub_box(
+        self, img: torch.Tensor, gt: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Crops a sub-box of shape (D_sub, H_sub, W_sub) from full (1, D_full, H_full, W_full)."""
+        _, D_full, H_full, W_full = img.shape
+        D_sub, H_sub, W_sub = self.sub_box_size
+
+        d_start = random.randint(0, max(0, D_full - D_sub))
+        h_start = random.randint(0, max(0, H_full - H_sub))
+        w_start = random.randint(0, max(0, W_full - W_sub))
+
+        img_crop = img[:, d_start : d_start + D_sub, h_start : h_start + H_sub, w_start : w_start + W_sub]
+        gt_crop  = gt[:,  d_start : d_start + D_sub, h_start : h_start + H_sub, w_start : w_start + W_sub]
+
+        return img_crop, gt_crop
+
+    def __getitem__(self, idx: int) -> dict:
+        item = self.items[idx]
+
+        img_np = self._load_volume(item["images"])
+        gt_np = self._load_volume(item["gts"])
+
+        img = self.img_transform(img_np) if self.img_transform else torch.from_numpy(img_np)
+        gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
+
+        assert img.shape[1:] == gt.shape[1:], (
+            f"Full volume shape mismatch: img {img.shape[1:]} vs gt {gt.shape[1:]}"
         )
- 
-    def __len__(self):
-        return len(self.files)
- 
- 
-    def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
-        img_path, gt_path = self.files[index]
- 
-        img_np = np.load(img_path)
-        img: Tensor = self.img_transform(img_np)
- 
-        data_dict = {"images": img, "stems": img_path.stem}
- 
-        if not self.test_mode:
-            gt_np = self._load_volume(gt_path)
-            gt: Tensor = self.gt_transform(gt_np)
- 
-            _, D, H, W = img.shape
-            K, Dg, Hg, Wg = gt.shape
-            assert (Dg, Hg, Wg) == (D, H, W)
-            assert (D, H, W) == self.box_size, (
-                f"Expected box size {self.box_size}, got {(D, H, W)}"
+
+        if self.sub_box_size is not None:
+            img, gt = self._extract_sub_box(img, gt)
+            assert img.shape[1:] == self.sub_box_size, (
+                f"Sub-box crop shape {img.shape[1:]} does not match expected {self.sub_box_size}"
             )
- 
-            data_dict["gts"] = gt
- 
-        return data_dict
 
-
+        return {
+            "images": img,
+            "gts": gt,
+            "stems": item["stem"]
+        }

@@ -42,7 +42,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
-from src.utils.dataset import SliceDataset
+from src.utils.dataset import BoxDataset, SliceDataset
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
 from src.utils.utils import (
@@ -81,44 +81,46 @@ def gt_transform(K, img):
     img = class2one_hot(img, K=K)
     return img[0]
 
+def img_transform_3d(vol: np.ndarray) -> Tensor:
+    """
+    Input:  vol is a 3D numpy array from stacked PNGs with shape (D, H, W)
+    Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
+    """
+    vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
+    tensor = torch.from_numpy(vol)
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
+    return tensor
+
+
+def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
+    """
+    Input:  vol is a 3D numpy array from stacked PNG masks (D, H, W)
+            containing values in {0, 63, 126, 189, 252}
+    Output: 4D float Tensor (K, D, H, W) one-hot encoded
+    """
+    vol = np.array(vol, dtype=np.float32)
+
+    # Convert intensity values {0, 63, 126, 189, 252} -> class indices {0, 1, 2, 3, 4}
+    # Using 63.0 step for SEGTHOR 5-class masks
+    vol = np.round(vol / 63.0).astype(np.int64)
+
+    # Add channel dimension: (1, D, H, W)
+    vol_tensor = torch.from_numpy(vol)[None, ...]
+
+    # Return one-hot encoded tensor: (K, D, H, W)
+    return class2one_hot(vol_tensor, K=K)[0]
 
 def setup(
     config: Config,
 ) -> tuple[nn.Module, Any, LRScheduler, Any, DataLoader, DataLoader, int]:
-    # Networks and scheduler
-    device = torch.device("cuda") if config.gpu else torch.device("cpu")
-    print(f">> Picked {device} to run experiments")
-
-    num_classes: int = config.dataset.num_classes
-    kernels: int = config.model.kernels
-    factor: int = config.model.factor
-
-    # NOTE Gonna rewrite this into a BaseModel which can load any subclass from str
-    if config.model.name == "ENet":
-        net = ENet(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
-        )
-    else:
-        net = shallowCNN(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
-        )
-
-    net.init_weights()
-    net.to(device)
-
-    lr = config.lr
-    optimizer = torch.optim.AdamW(
-        net.parameters(), lr=lr, weight_decay=config.weight_decay, betas=config.betas
-    )
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.epochs
-    )
+    # ... (Keep network, optimizer, and scheduler initialization unchanged) ...
 
     # Dataset part
     batch_size: int = config.batch_size
     data_root_dir = autoroot.root / "data" / config.dataset.name
 
+    # --- Existing 2D Setup (DO NOT CHANGE) ---
     train_set = SliceDataset(
         "train",
         data_root_dir,
@@ -126,8 +128,42 @@ def setup(
         gt_transform=partial(gt_transform, num_classes),
         debug=config.debug,
     )
+    val_set = SliceDataset(
+        "val",
+        data_root_dir,
+        img_transform=img_transform,
+        gt_transform=partial(gt_transform, num_classes),
+        debug=config.debug,
+    )
+
+    # --- Add New 3D Setup ---
+    # Points to your converted 3D dataset folder (e.g. data/SEGTHOR_3D)
+    data_root_dir_3d = autoroot.root / "data" / f"{config.dataset.name}_3D"
+
+    train_set_3d = BoxDataset(
+        "train",
+        data_root_dir_3d,
+        img_transform=img_transform_3d,
+        gt_transform=partial(gt_transform_3d, num_classes),
+        sub_box_size=config.sub_box_size, 
+        debug=config.debug,
+    )
+    val_set_3d = BoxDataset(
+        "val",
+        data_root_dir_3d,
+        img_transform=img_transform_3d,
+        gt_transform=partial(gt_transform_3d, num_classes),
+        sub_box_size=config.sub_box_size,  
+        debug=config.debug,
+    )
+
+    # --- Select Active Loaders ---
+    # Toggle loader source based on config without deleting the 2D code
+    selected_train_set = train_set_3d if config.is_3d else train_set
+    selected_val_set = val_set_3d if config.is_3d else val_set
+    
     train_loader = DataLoader(
-        train_set,
+        selected_train_set,
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
@@ -136,15 +172,8 @@ def setup(
         shuffle=True,
     )
 
-    val_set = SliceDataset(
-        "val",
-        data_root_dir,
-        img_transform=img_transform,
-        gt_transform=partial(gt_transform, num_classes),
-        debug=config.debug,
-    )
     val_loader = DataLoader(
-        val_set,
+        selected_val_set,
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,

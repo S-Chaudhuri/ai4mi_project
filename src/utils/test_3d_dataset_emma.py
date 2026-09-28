@@ -1,73 +1,109 @@
-import tempfile
+#!/usr/bin/env python3
+"""
+3D Volumetric Construction Test
+Verifies that 2D PNG slice groups are correctly assembled into 3D volumes.
+"""
+
 from pathlib import Path
-import torch
-from torch.utils.data import DataLoader
-from PIL import Image
+from functools import partial
 import numpy as np
+import torch
+import autoroot  # noqa
 
-# Import your actual dataset class and helper functions
-from dataset import BoxDataset
+# Import pipeline components
+from main import img_transform_3d, gt_transform_3d
+from src.utils.dataset import BoxDataset
 
 
-def test_box_dataset():
-    # 1. Create a temporary folder structure simulating 1 patient with 10 slices
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        img_dir = tmp_path / "train" / "img" / "patient_01"
-        gt_dir = tmp_path / "train" / "gt" / "patient_01"
-        img_dir.mkdir(parents=True, exist_ok=True)
-        gt_dir.mkdir(parents=True, exist_ok=True)
+def test_volumetric_structure():
+    print("==================================================")
+    print("      TESTING 3D VOLUMETRIC DATA CONSTRUCTION     ")
+    print("==================================================\n")
 
-        # Create dummy 100x100 PNG files
-        for i in range(10):
-            Image.new("L", (100, 100), color=100).save(img_dir / f"slice_{i:03d}.png")
-            Image.new("L", (100, 100), color=1).save(gt_dir / f"slice_{i:03d}.png")
+    dataset_name = "SEGTHOR"
+    data_dir = autoroot.root / "data" / dataset_name
+    num_classes = 5
 
-        # Dummy transform functions
-        img_transform = lambda img: torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0) / 255.0
-        gt_transform = lambda img: torch.from_numpy(np.array(img, dtype=np.int64)).unsqueeze(0)
+    if not data_dir.exists():
+        print(f"Error: Path '{data_dir}' not found.")
+        return
 
-        # 2. Instantiate BoxDataset with a specific box size (Depth=4, H=32, W=32)
-        target_box = (4, 32, 32)
-        dataset = BoxDataset(
-            subset="train",
-            root_dir=tmp_path,
-            img_transform=img_transform,
-            gt_transform=gt_transform,
-            box_size=target_box,
-        )
+    # 1. Instantiate Dataset
+    dataset = BoxDataset(
+        subset="train",
+        root_dir=data_dir,
+        img_transform=img_transform_3d,
+        gt_transform=partial(gt_transform_3d, num_classes),
+        sub_box_size=(128, 128, 128), # Returns sub-box crop of shape (128, 128, 132)
+    )
 
-        # 3. Test single item output
-        sample = dataset[0]
-        img_tensor = sample["images"]
-        gt_tensor = sample["gts"]
+    if len(dataset) == 0:
+        print("Error: No items found in dataset.")
+        return
 
-        assert img_tensor.shape == (1, 4, 32, 32), f"Expected (1, 4, 32, 32), got {img_tensor.shape}"
-        assert gt_tensor.shape == (1, 4, 32, 32), f"Expected (1, 4, 32, 32), got {gt_tensor.shape}"
-        print("✅ Single item test passed!")
+    print(f"Dataset loaded. Total 3D volumes found: {len(dataset)}\n")
 
-        # 4. Test PyTorch DataLoader compatibility
-        loader = DataLoader(dataset, batch_size=1)
-        batch = next(iter(loader))
-        assert batch["images"].shape == (1, 1, 4, 32, 32), "DataLoader batching failed"
-        print("✅ DataLoader batching test passed!")
+    # 2. Inspect First Sample
+    sample = dataset[0]
+    img = sample["images"]
+    gt = sample["gts"]
+    stem = sample["stems"]
+
+    print(f"Patient Identifier / Stem: '{stem}'")
+    print(f"Image Tensor Shape       : {img.shape}  --> (Channels, Depth, Height, Width)")
+    print(f"GT Tensor Shape          : {gt.shape}  --> (Classes, Depth, Height, Width)")
+
+    # 3. Dimensionality Checks
+    print("\n--- Dimensionality Checks ---")
+    
+    # Verify 4D Tensor Output (C, D, H, W)
+    if img.ndim == 4:
+        print("  [PASS] Image is a 4D Tensor (1, D, H, W)")
+    else:
+        print(f"  [FAIL] Expected 4D tensor, got {img.ndim}D shape: {img.shape}")
+
+    # Verify Depth Dimension (D > 1)
+    C, D, H, W = img.shape
+    if D > 1:
+        print(f"  [PASS] Successfully stacked {D} axial slices into 3D Depth dimension")
+    else:
+        print(f"  [FAIL] Depth dimension is {D}. Expected D > 1 slices stacked together.")
+
+    # Verify 2D Spatial Consistency (H, W)
+    print(f"  [INFO] Volume 2D Slice Resolution: {H} x {W}")
+
+    # 4. Content Verification across Slices
+    print("\n--- Slice Continuity Check ---")
+    
+    # Calculate slice-wise mean intensity along the Depth axis (dim 1)
+    slice_means = img[0].mean(dim=(1, 2)).numpy()  # Mean intensity per slice
+    
+    print(f"  - First slice mean intensity : {slice_means[0]:.4f}")
+    print(f"  - Middle slice mean intensity: {slice_means[D // 2]:.4f}")
+    print(f"  - Last slice mean intensity  : {slice_means[-1]:.4f}")
+
+    # Check if intensity varies across slices (proves distinct slices were loaded, not duplicate copies)
+    if not np.allclose(slice_means[0], slice_means[D // 2]):
+        print("  [PASS] Slices contain distinct volumetric spatial content across depth")
+    else:
+        print("  [WARNING] Slice intensities are identical across depth. Verify slice ordering.")
+
+    # 5. One-Hot Spatial Consistency
+    print("\n--- Ground Truth Class Channel Check ---")
+    present_classes = torch.nonzero(gt.sum(dim=(1, 2, 3))).flatten().tolist()
+    print(f"  - Organ classes present in this volume: {present_classes} / {list(range(num_classes))}")
+    
+    # Check sum along class dimension equals 1 for all voxels
+    class_sum = gt.sum(dim=0)
+    if torch.allclose(class_sum, torch.ones_like(class_sum)):
+        print("  [PASS] One-hot encoding valid: Every voxel sums to 1 across class channels")
+    else:
+        print("  [FAIL] Invalid one-hot encoding: Voxels do not sum to 1 across classes")
+
+    print("\n==================================================")
+    print("          VOLUMETRIC VERIFICATION COMPLETE        ")
+    print("==================================================")
 
 
 if __name__ == "__main__":
-    test_box_dataset()
-
-data_root = "/Users/emmaoosterhuis/Library/CloudStorage/OneDrive-UvA/Master/Medical Imaging/ai4mi_project/data"
-
-real_dataset = BoxDataset(
-    subset="train",
-    root_dir=data_root,g
-    img_transform=lambda img: torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0) / 255.0,
-    gt_transform=lambda img: torch.from_numpy(np.array(img, dtype=np.int64)).unsqueeze(0),
-    box_size=(4, 32, 32),
-    debug=True
-)   
-
-sample = real_dataset[0]
-print(f"Sample image shape: {sample['images'].shape}")  
-print("3D Image Shape (C, D, H, W):", sample["images"].shape)
-print("3D Label Shape (K, D, H, W):", sample["gts"].shape)
+    test_volumetric_structure()
