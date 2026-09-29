@@ -22,10 +22,12 @@ class DatasetConfig:
     retains: int = 5
     fold: int = 0
 
+    box_size: tuple[int, int, int] = (132, 132, 128)
+
 
 @dataclass
 class ModelConfig:
-    name: Literal["ShallowNet", "ENet"] = "ENet"
+    name: Literal["ShallowNet", "ENet", "UNet3D"] = "ENet"
 
     kernels: int = 8
     factor: int = 2
@@ -40,6 +42,8 @@ class Config:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     model: ModelConfig = field(default_factory=ModelConfig)
+
+    dims: Literal["2d", "3d"] = "2d"
 
     epochs: int = 20
 
