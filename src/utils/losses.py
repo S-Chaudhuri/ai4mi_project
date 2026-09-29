@@ -72,6 +72,7 @@ class DiceLoss:
         loss = 1 - dice_score.mean()
         return loss
 
+
 class CrossEntropyPlusDice:
     def __init__(self, *, ce_idk, dice_idk, dice_weight=1.0):
         self.ce = CrossEntropy(idk=ce_idk)
