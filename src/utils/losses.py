@@ -25,6 +25,9 @@ from torch import einsum
 
 from utils.utils import simplex, sset
 
+""" 
+3D lOSS Calculations
+"""
 
 class CrossEntropy:
     def __init__(self, **kwargs):
@@ -70,10 +73,88 @@ class DiceLoss:
         return loss
 
 
+class DiceLoss2D:
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, weak_target):
+        assert pred_softmax.shape == weak_target.shape
+        assert simplex(pred_softmax)
+        assert sset(weak_target, [0, 1])
+
+        p = pred_softmax[:, self.idk, ...]
+        g = weak_target[:, self.idk, ...].float()
+
+        intersection = (p * g).sum(dim=(2, 3))
+        union = p.sum(dim=(2, 3)) + g.sum(dim=(2, 3))
+
+        dice_score = (2 * intersection + 1e-10) / (union + 1e-10)
+        loss = 1 - dice_score.mean()
+        return loss
+
+
 class CrossEntropyPlusDice:
     def __init__(self, *, ce_idk, dice_idk, dice_weight=1.0):
         self.ce = CrossEntropy(idk=ce_idk)
         self.dice = DiceLoss(idk=dice_idk)
+        self.dice_weight = dice_weight
+
+    def __call__(self, pred_softmax, weak_target):
+        return self.ce(pred_softmax, weak_target) + self.dice_weight * self.dice(
+            pred_softmax, weak_target)
+
+
+""" 
+2D lOSS Calculations
+"""
+class CrossEntropy2D:
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, weak_target):
+        assert pred_softmax.shape == weak_target.shape
+        assert simplex(pred_softmax)
+        assert sset(weak_target, [0, 1])
+
+        log_p = (pred_softmax[:, self.idk, ...] + 1e-10).log()
+        mask = weak_target[:, self.idk, ...].float()
+
+        loss = -einsum("bkwh,bkwh->", mask, log_p)
+        loss /= mask.sum() + 1e-10
+
+        return loss
+
+class PartialCrossEntropy2D(CrossEntropy2D):
+    def __init__(self, **kwargs):
+        super().__init__(idk=[1], **kwargs)
+
+
+class DiceLoss2D:
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, weak_target):
+        assert pred_softmax.shape == weak_target.shape
+        assert simplex(pred_softmax)
+        assert sset(weak_target, [0, 1])
+
+        p = pred_softmax[:, self.idk, ...]
+        g = weak_target[:, self.idk, ...].float()
+
+        intersection = (p * g).sum(dim=(2, 3))
+        union = p.sum(dim=(2, 3)) + g.sum(dim=(2, 3))
+
+        dice_score = (2 * intersection + 1e-10) / (union + 1e-10)
+        loss = 1 - dice_score.mean()
+        return loss
+
+class CrossEntropyPlusDice2D:
+    def __init__(self, *, ce_idk, dice_idk, dice_weight=1.0):
+        self.ce = CrossEntropy2D(idk=ce_idk)
+        self.dice = DiceLoss2D(idk=dice_idk)
         self.dice_weight = dice_weight
 
     def __call__(self, pred_softmax, weak_target):
