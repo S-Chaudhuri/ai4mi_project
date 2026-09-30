@@ -48,7 +48,6 @@ from src.models.ENet import ENet
 from src.utils.utils import (
     Dcm,
     class2one_hot,
-    get_root_dir,
     probs2one_hot,
     probs2class,
     seed_all,
@@ -128,6 +127,11 @@ def setup(
     batch_size: int = config.batch_size
     data_root_dir = autoroot.root / "data" / config.dataset.name
 
+    # Store the checksum of the dataset
+    artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
+    artifect.add_reference(f"file://{data_root_dir}")
+    wandb.log_artifact(artifect)
+
     train_set = SliceDataset(
         "train",
         data_root_dir,
@@ -202,7 +206,7 @@ def runTraining(config: Config):
         entity="ai-for-medical-imaging",
         project=f"{config.dataset.name}",
         config=dataclasses.asdict(config),
-        dir=get_root_dir() / "results" / "wandb",
+        dir=autoroot.root / "results" / "wandb",
         notes=config.notes,
     )
 

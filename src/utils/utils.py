@@ -55,12 +55,6 @@ A = TypeVar("A")
 B = TypeVar("B")
 
 
-# This works based on relative path of this utils.py. So if the file that contains this
-# function isn't in src/utils/ , this fails.
-def get_root_dir():
-    return Path(__file__).parent.parent.parent.resolve()
-
-
 def seed_all(seed: int, gpu: bool = False):
     torch.manual_seed(seed)
     if gpu:

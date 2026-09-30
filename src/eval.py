@@ -12,7 +12,7 @@ from PIL import Image
 from skimage.transform import resize
 from torch.utils.data import DataLoader, Dataset
 
-from src.main import img_transform
+from src.train import img_transform
 from src.models.ENet import ENet
 from src.models.ShallowNet import shallowCNN
 from src.utils.dataset import make_dataset
@@ -48,13 +48,7 @@ class SinglePatientDataset(Dataset):
         return self.img_transform(img)
 
 
-def save_prediction_nii(
-    class_preds: np.ndarray, patient_id: int, out_path: Path
-) -> None:
-    """Stack per-slice class predictions into a 3D NIfTI aligned with the original CT.
-
-    class_preds: (n_slices, h, w), slices sorted by ascending slice index.
-    """
+def save_prediction_nii(class_preds: np.ndarray, patient_id: int, out_path: Path):
     patient_name = f"Patient_{patient_id:02d}"
     ct_path = (
         autoroot.root
@@ -65,7 +59,7 @@ def save_prediction_nii(
         / f"{patient_name}.nii.gz"
     )
     ct_nib = nib.load(str(ct_path))
-    ct = np.asarray(ct_nib.dataobj)
+    ct = np.asarray(ct_nib.dataobj)  # type: ignore
 
     assert class_preds.shape[0] == ct.shape[2], (class_preds.shape, ct.shape)
     # Upscale per-slice predictions back to the native in-plane resolution
