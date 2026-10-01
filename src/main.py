@@ -33,7 +33,13 @@ from src.utils.utils import (
     dice_coef,
     save_images,
 )
-from src.utils.losses import CrossEntropy, CrossEntropyPlusDice, CrossEntropy2D, CrossEntropyPlusDice2D
+from src.utils.losses import (
+    CrossEntropy,
+    CrossEntropyPlusDice,
+    CrossEntropy2D,
+    CrossEntropyPlusDice2D,
+)
+
 
 def img_transform_2d(img):
     img = img.convert("L")
@@ -52,6 +58,37 @@ def gt_transform_2d(K, img):
 
 
 def img_transform_3d(vol: np.ndarray) -> Tensor:
+    """
+    Input:  vol is a 3D numpy array from stacked PNGs with shape (D, H, W)
+    Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
+    """
+    vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
+    tensor = torch.from_numpy(vol)
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
+    return tensor
+
+
+def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
+    """
+    Input:  vol is a 3D numpy array from stacked PNG masks (D, H, W)
+            containing values in {0, 63, 126, 189, 252}
+    Output: 4D float Tensor (K, D, H, W) one-hot encoded
+    """
+    vol = np.array(vol, dtype=np.float32)
+
+    # Convert intensity values {0, 63, 126, 189, 252} -> class indices {0, 1, 2, 3, 4}
+    # Using 63.0 step for SEGTHOR 5-class masks
+    vol = np.round(vol / 63.0).astype(np.int64)
+
+    # Add channel dimension: (1, D, H, W)
+    vol_tensor = torch.from_numpy(vol)[None, ...]
+
+    # Return one-hot encoded tensor: (K, D, H, W)
+    return class2one_hot(vol_tensor, K=K)[0]
+
+
+def img_transform_3d(vol: np.ndarray) -> Tensor:
     vol = vol.astype(np.float32)
     if vol.max() > 1.0:  # heuristic: looks like it wasn't pre-normalized
         vol = vol / 255.0
@@ -63,6 +100,31 @@ def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
     return class2one_hot(vol, K=K)[0]  # (K, D, H, W)
 
 
+def get_model(config: Config):
+    num_classes: int = config.dataset.num_classes
+    kernels: int = config.model.kernels
+    factor: int = config.model.factor
+
+    if config.is_3d:
+        if config.model.name != "UNet3D":
+            raise ValueError(
+                f"dims='3d' requires model.name='UNet3D', got {config.model.name!r}"
+            )
+        return UNet3D(
+            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+        )
+    elif config.model.name == "ENet":
+        return ENet(
+            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+        )
+    elif config.model.name == "shallowCNN":
+        return shallowCNN(
+            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+        )
+    else:
+        raise ValueError(f"Unknown model.name {config.model.name!r} for dims='2d'")
+
+
 def setup(
     config: Config,
 ) -> tuple[nn.Module, Any, LRScheduler, Any, DataLoader, DataLoader, int]:
@@ -70,27 +132,8 @@ def setup(
     print(f">> Picked {device} to run experiments")
 
     num_classes: int = config.dataset.num_classes
-    kernels: int = config.model.kernels
-    factor: int = config.model.factor
 
-    if config.dims == "3d":
-        if config.model.name != "UNet3D":
-            raise ValueError(
-                f"dims='3d' requires model.name='UNet3D', got {config.model.name!r}"
-            )
-        net = UNet3D(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
-        )
-    elif config.model.name == "ENet":
-        net = ENet(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
-        )
-    elif config.model.name == "shallowCNN":
-        net = shallowCNN(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
-        )
-    else:
-        raise ValueError(f"Unknown model.name {config.model.name!r} for dims='2d'")
+    net = get_model(config)
 
     net.init_weights()
     net.to(device)
@@ -109,17 +152,15 @@ def setup(
 
     dataset_cls: type[Dataset]
     dataset_kwargs: dict[str, Any] = {}
-    if config.dims == "2d":
-        dataset_cls = SliceDataset
-        img_transform = img_transform_2d
-        gt_transform = partial(gt_transform_2d, num_classes)
-    elif config.dims == "3d":
+    if config.is_3d:
         dataset_cls = BoxDataset
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["box_size"] = config.dataset.box_size
     else:
-        raise ValueError(f"Unknown config.dims {config.dims!r}, expected '2d' or '3d'")
+        dataset_cls = SliceDataset
+        img_transform = img_transform_2d
+        gt_transform = partial(gt_transform_2d, num_classes)
 
     train_set = dataset_cls(
         "train",
@@ -135,8 +176,7 @@ def setup(
         num_workers=config.num_workers,
         pin_memory=True,
         persistent_workers=True,
-        generator=torch.Generator().manual_seed(config.seed),
-        shuffle=True,
+        shuffle=False,
     )
 
     val_set = dataset_cls(
@@ -159,7 +199,6 @@ def setup(
     return (net, optimizer, scheduler, device, train_loader, val_loader, num_classes)
 
 
-
 def get_loss_func(config: Config, num_classes: int):
     if config.mode == "full":
         idk = list(range(num_classes))
@@ -168,18 +207,18 @@ def get_loss_func(config: Config, num_classes: int):
     else:
         raise ValueError(config.mode, config.dataset.name)
 
-    if config.dims == "3d":
+    if config.is_3d:
         ce_cls, ce_dice_cls = CrossEntropy, CrossEntropyPlusDice
-    elif config.dims == "2d":
-        ce_cls, ce_dice_cls = CrossEntropy2D, CrossEntropyPlusDice2D
     else:
-        raise ValueError(f"Unknown config.dims {config.dims!r}, expected '2d' or '3d'")
+        ce_cls, ce_dice_cls = CrossEntropy2D, CrossEntropyPlusDice2D
 
     if config.loss == "ce":
         return ce_cls(idk=idk)
     elif config.loss == "dice_ce":
         dice_idk = [c for c in idk if c != 0]
-        return ce_dice_cls(ce_idk=idk, dice_idk=dice_idk, dice_weight=config.dice_weight)
+        return ce_dice_cls(
+            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.dice_weight
+        )
     else:
         raise ValueError(config.loss)
 
@@ -190,18 +229,21 @@ def get_loss_func(config: Config, num_classes: int):
 
 
 def save_predictions(
-    predicted_class: Tensor, stems, dest: Path, dims: str, mult: int
+    predicted_class: Tensor, stems, dest: Path, is_3d: bool, mult: int
 ) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    if dims == "2d":
-        save_images(predicted_class * mult, stems, dest)
-    else:
+
+    if is_3d:
         for vol, stem in zip(predicted_class.cpu().numpy(), stems):
             np.save(dest / f"{stem}.npy", vol.astype(np.uint8))
+    else:
+        save_images(predicted_class * mult, stems, dest)
 
 
 def runTraining(config: Config):
-    print(f">>> Setting up to train on {config.dataset.name} ({config.dims}) with {config.mode}")
+    print(
+        f">>> Setting up to train on {config.dataset.name} ({'3D' if config.is_3d else '2D'}) with {config.mode}"
+    )
 
     net, optimizer, scheduler, device, train_loader, val_loader, num_classes = setup(
         config
@@ -307,7 +349,7 @@ def runTraining(config: Config):
                                 predicted_class,
                                 data["stems"],
                                 result_dir / f"iter{e:03d}" / m,
-                                config.dims,
+                                config.is_3d,
                                 mult,
                             )
 
@@ -379,3 +421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

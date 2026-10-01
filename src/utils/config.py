@@ -38,12 +38,16 @@ class Config:
     # Destination directory to save the results (predictions and weights).
     dest: Optional[Path] = None
 
+    # Toggle 3D Volumetric Sub-Box Pipeline
+    is_3d: bool = False
+
+    # Spatial dimensions for 3D sub-box crops (Depth, Height, Width)
+    sub_box_size: tuple[int, int, int] = (128, 128, 128)
+
     # The dataset to train on
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     model: ModelConfig = field(default_factory=ModelConfig)
-
-    dims: Literal["2d", "3d"] = "2d"
 
     epochs: int = 20
 
