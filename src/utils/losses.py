@@ -29,6 +29,7 @@ from utils.utils import simplex, sset
 3D lOSS Calculations
 """
 
+
 class CrossEntropy:
     def __init__(self, **kwargs):
         # Self.idk is used to filter out some classes of the target mask. Use fancy indexing
@@ -48,9 +49,11 @@ class CrossEntropy:
 
         return loss
 
+
 class PartialCrossEntropy(CrossEntropy):
     def __init__(self, **kwargs):
         super().__init__(idk=[1], **kwargs)
+
 
 class DiceLoss:
     def __init__(self, **kwargs):
@@ -81,12 +84,15 @@ class CrossEntropyPlusDice:
 
     def __call__(self, pred_softmax, weak_target):
         return self.ce(pred_softmax, weak_target) + self.dice_weight * self.dice(
-            pred_softmax, weak_target)
+            pred_softmax, weak_target
+        )
 
 
 """ 
 2D lOSS Calculations
 """
+
+
 class CrossEntropy2D:
     def __init__(self, **kwargs):
         self.idk = kwargs["idk"]
@@ -104,6 +110,7 @@ class CrossEntropy2D:
         loss /= mask.sum() + 1e-10
 
         return loss
+
 
 class PartialCrossEntropy2D(CrossEntropy2D):
     def __init__(self, **kwargs):
@@ -130,6 +137,7 @@ class DiceLoss2D:
         loss = 1 - dice_score.mean()
         return loss
 
+
 class CrossEntropyPlusDice2D:
     def __init__(self, *, ce_idk, dice_idk, dice_weight=1.0):
         self.ce = CrossEntropy2D(idk=ce_idk)
@@ -138,4 +146,5 @@ class CrossEntropyPlusDice2D:
 
     def __call__(self, pred_softmax, weak_target):
         return self.ce(pred_softmax, weak_target) + self.dice_weight * self.dice(
-            pred_softmax, weak_target)
+            pred_softmax, weak_target
+        )
