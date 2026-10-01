@@ -26,12 +26,9 @@ import torch
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
-from torch.version import debug
-from typing import Callable, Union, List, Tuple, Dict, Optional
+from typing import Any, Callable, Union, List, Tuple, Dict, Optional
 import numpy as np
-from utils.utils import class2one_hot
 from collections import defaultdict
-
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -101,14 +98,14 @@ class SliceDataset(Dataset):
             data_dict["gts"] = gt
 
         return data_dict
-    
- 
-def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, any]]:
-    root_dir = Path(root_dir)
-    
+
+
+def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
     # 1. Resolve image and ground-truth directories
     subset_dir = root_dir / subset
-    img_dir = subset_dir / "img" if (subset_dir / "img").exists() else subset_dir / "images"
+    img_dir = (
+        subset_dir / "img" if (subset_dir / "img").exists() else subset_dir / "images"
+    )
     gt_dir = subset_dir / "gt" if (subset_dir / "gt").exists() else subset_dir / "masks"
 
     if not img_dir.exists() or not gt_dir.exists():
@@ -139,17 +136,20 @@ def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, any]]:
         gt_slices = sorted(gt_groups[pid])
 
         if len(img_slices) != len(gt_slices):
-            print(f"[Warning] Mismatch for {pid}: {len(img_slices)} images vs {len(gt_slices)} GTs.")
+            print(
+                f"[Warning] Mismatch for {pid}: {len(img_slices)} images vs {len(gt_slices)} GTs."
+            )
             continue
 
-        items.append({
-            "stem": pid,
-            "images": img_slices,
-            "gts": gt_slices
-        })
+        items.append({"stem": pid, "images": img_slices, "gts": gt_slices})
 
-    print(f"Successfully matched {len(items)} 3D patient volumes between images and GT.")
+    print(
+        f"Successfully matched {len(items)} 3D patient volumes between images and GT."
+    )
     return items
+
+
+"""Currently this only gives a single box per sample, so we should update this in"""
 
 
 class BoxDataset(Dataset):
@@ -159,7 +159,7 @@ class BoxDataset(Dataset):
         root_dir: Path,
         img_transform=None,
         gt_transform=None,
-        sub_box_size: Optional[Tuple[int, int, int]] = None,  # e.g., (128, 132, 132)
+        sub_box_size: tuple[int, int, int] = (128, 132, 132),  # e.g., (128, 132, 132)
         debug: bool = False,
     ):
         self.root_dir = Path(root_dir)
@@ -183,13 +183,13 @@ class BoxDataset(Dataset):
 
     def _load_volume(self, slice_paths: List[Path]) -> np.ndarray:
         """Loads a list of 2D PNG file paths and stacks them along the depth axis (axis=0).
-        
+
         Output shape: (D, H, W)
         """
-        
+
         slices = [np.array(Image.open(p)) for p in slice_paths]
         return np.stack(slices, axis=0)
-    
+
     def _extract_sub_box(
         self, img: torch.Tensor, gt: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -201,8 +201,18 @@ class BoxDataset(Dataset):
         h_start = random.randint(0, max(0, H_full - H_sub))
         w_start = random.randint(0, max(0, W_full - W_sub))
 
-        img_crop = img[:, d_start : d_start + D_sub, h_start : h_start + H_sub, w_start : w_start + W_sub]
-        gt_crop  = gt[:,  d_start : d_start + D_sub, h_start : h_start + H_sub, w_start : w_start + W_sub]
+        img_crop = img[
+            :,
+            d_start : d_start + D_sub,
+            h_start : h_start + H_sub,
+            w_start : w_start + W_sub,
+        ]
+        gt_crop = gt[
+            :,
+            d_start : d_start + D_sub,
+            h_start : h_start + H_sub,
+            w_start : w_start + W_sub,
+        ]
 
         return img_crop, gt_crop
 
@@ -212,7 +222,11 @@ class BoxDataset(Dataset):
         img_np = self._load_volume(item["images"])
         gt_np = self._load_volume(item["gts"])
 
-        img = self.img_transform(img_np) if self.img_transform else torch.from_numpy(img_np)
+        img = (
+            self.img_transform(img_np)
+            if self.img_transform
+            else torch.from_numpy(img_np)
+        )
         gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
 
         assert img.shape[1:] == gt.shape[1:], (
@@ -225,8 +239,5 @@ class BoxDataset(Dataset):
                 f"Sub-box crop shape {img.shape[1:]} does not match expected {self.sub_box_size}"
             )
 
-        return {
-            "images": img,
-            "gts": gt,
-            "stems": item["stem"]
-        }
+        return {"images": img, "gts": gt, "stems": item["stem"]}
+
