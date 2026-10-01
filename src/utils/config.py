@@ -31,6 +31,7 @@ class ModelConfig:
 
     kernels: int = 8
     factor: int = 2
+    depth: int = 2
 
 
 @dataclass

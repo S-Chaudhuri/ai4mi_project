@@ -79,13 +79,13 @@ def setup(
                 f"dims='3d' requires model.name='UNet3D', got {config.model.name!r}"
             )
         net = UNet3D(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout, depth=config.model.depth
         )
     elif config.model.name == "ENet":
         net = ENet(
             1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
         )
-    elif config.model.name == "shallowCNN":
+    elif config.model.name == "shallowNet":
         net = shallowCNN(
             1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
         )

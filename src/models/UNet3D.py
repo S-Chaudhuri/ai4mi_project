@@ -47,7 +47,8 @@ class UNet3D(nn.Module):
         kernels: int = 16,
         factor: int = 2,
         dropoutRate: float = 0.01,
-        pool_kernels: Sequence[tuple[int, int, int]] = ((2, 2, 2), (2, 2, 2)),
+        depth: int = 2,
+        pool_kernels: Sequence[tuple[int, int, int]] | None = None,
         max_channels: int = 256,
         **kwargs,
     ):
@@ -60,6 +61,8 @@ class UNet3D(nn.Module):
                       avoid pooling the z axis.
         """
         super().__init__()
+        if pool_kernels is None:
+            pool_kernels = [(2, 2, 2)] * depth  # isotropic default, driven by `depth`
         self.pool_kernels = [tuple(k) for k in pool_kernels]
         chans = [
             min(kernels * factor**i, max_channels)
