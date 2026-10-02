@@ -351,8 +351,6 @@ def runTraining(config: Config):
                 cm()
             ):  # Either dummy context manager, or the torch.no_grad for validation
                 j = 0
-                total_correct = 0
-                total_pixels = 0
                 tq_iter = tqdm_(enumerate(loader), total=len(loader), desc=desc)
                 for i, data in tq_iter:
                     img = data["images"].to(device)
@@ -376,12 +374,6 @@ def runTraining(config: Config):
                         log_dice[e, j : j + batch_size, :] = dice_coef(
                             pred_seg, gt
                         )  # One DSC value per sample and per class
-
-                        # Pixel-wise accuracy
-                        predicted_classes = pred_probs.argmax(dim=1)  # (B, W, H)
-                        gt_classes = gt.argmax(dim=1)  # (B, W, H)
-                        total_correct += (predicted_classes == gt_classes).sum().item()
-                        total_pixels += predicted_classes.numel()
 
                         loss = loss_fn(pred_probs, gt)
                         log_loss[e, i] = (
@@ -412,11 +404,9 @@ def runTraining(config: Config):
 
                     j += batch_size  # Keep in mind that _in theory_, each batch might have a different size
                     # For the DSC average: do not take the background class (0) into account:
-                    epoch_acc = total_correct / total_pixels
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
-                        "Acc": f"{epoch_acc:05.3f}",
                     }
                     if num_classes > 2:
                         postfix_dict |= {
@@ -425,19 +415,12 @@ def runTraining(config: Config):
                         }
                     tq_iter.set_postfix(postfix_dict)
 
-                if m == "train":
-                    acc_tra = epoch_acc
-                else:
-                    acc_val = epoch_acc
-
         metrics = {
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
             "train/dice": log_dice_tra[e, :, 1:].mean().item(),
-            "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
             "val/dice": log_dice_val[e, :, 1:].mean().item(),
-            "val/acc": acc_val,
         }
         if num_classes > 2:
             for k in range(1, num_classes):
