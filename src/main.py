@@ -156,31 +156,11 @@ def get_model(config: Config):
         raise ValueError(f"Unknown model.name {config.model.name!r} for dims='2d'")
 
 
-def setup(
-    config: Config,
-) -> tuple[nn.Module, Any, LRScheduler, Any, DataLoader, DataLoader, int]:
-    # Networks and scheduler
-    device = torch.device("cuda") if config.gpu else torch.device("cpu")
-    print(f">> Picked {device} to run experiments")
-
-    num_classes: int = config.dataset.num_classes
-
-    net = get_model(config)
-
-    net.init_weights()
-    net.to(device)
-
-    lr = config.lr
-    optimizer = torch.optim.AdamW(
-        net.parameters(), lr=lr, weight_decay=config.weight_decay, betas=config.betas
-    )
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.epochs
-    )
+def build_dataloaders(config: Config):
 
     # Dataset part
-    batch_size: int = config.batch_size
+    batch_size = config.batch_size
+    num_classes = config.dataset.num_classes
     data_root_dir = autoroot.root / "data" / config.dataset.name
 
     dataset_cls: type[Dataset]
@@ -229,11 +209,36 @@ def setup(
         shuffle=False,
     )
 
-    return (net, optimizer, scheduler, device, train_loader, val_loader, num_classes)
+    return train_loader, val_loader
+
+
+def setup(
+    config: Config,
+) -> tuple[nn.Module, Any, LRScheduler, Any, DataLoader, DataLoader]:
+    # Networks and scheduler
+    device = torch.device("cuda") if config.gpu else torch.device("cpu")
+    print(f">> Picked {device} to run experiments")
+
+    net = get_model(config)
+
+    net.init_weights()
+    net.to(device)
+
+    lr = config.lr
+    optimizer = torch.optim.AdamW(
+        net.parameters(), lr=lr, weight_decay=config.weight_decay, betas=config.betas
+    )
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=config.epochs
+    )
+
+    train_loader, val_loader = build_dataloaders(config)
+
+    return (net, optimizer, scheduler, device, train_loader, val_loader)
 
 
 def get_loss_func(config: Config):
-
     if config.mode == "full":
         idk = list(
             range(config.dataset.num_classes)
@@ -281,20 +286,19 @@ def runTraining(config: Config):
         f">>> Setting up to train on {config.dataset.name} ({'3D' if config.is_3d else '2D'}) with {config.mode}"
     )
 
-    net, optimizer, scheduler, device, train_loader, val_loader, num_classes = setup(
-        config
-    )
+    net, optimizer, scheduler, device, train_loader, val_loader = setup(config)
+
+    num_classes = config.dataset.num_classes
 
     result_dir = config.dest or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d/%m/%Y, %H:%M:%S')}"
+        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
     )
     result_dir.mkdir(parents=True, exist_ok=True)
     device_type = "cuda" if config.gpu else "cpu"
-    scaler = torch.amp.GradScaler(device_type, enabled=config.gpu)
 
     wandb.init(
         entity="ai-for-medical-imaging",
-        project=f"{config.dataset.name}-baseline",
+        project="SEGTHOR-3D",
         config=dataclasses.asdict(config),
         dir=get_root_dir() / "results" / "wandb",
     )
@@ -305,6 +309,7 @@ def runTraining(config: Config):
         wandb.watch(net, log="all", log_freq=100)
 
     loss_fn = get_loss_func(config)
+    scaler = torch.amp.GradScaler(device_type, enabled=config.gpu)
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
@@ -388,7 +393,9 @@ def runTraining(config: Config):
                         scaler.step(opt)
                         scaler.update()
 
-                    if m == "val":
+                    if (
+                        m == "val" and False
+                    ):  # Turn off for now, might just be something we only want to do during eval
                         with warnings.catch_warnings():
                             warnings.filterwarnings("ignore", category=UserWarning)
                             predicted_class: Tensor = probs2class(pred_probs)
@@ -442,11 +449,11 @@ def runTraining(config: Config):
         scheduler.step()
 
         # I save it at each epochs, in case the code crashes or I decide to stop it early
-        np.save(result_dir / "loss_tra.npy", log_loss_tra)
-        np.save(result_dir / "dice_tra.npy", log_dice_tra)
-        np.save(result_dir / "loss_val.npy", log_loss_val)
-        np.save(result_dir / "dice_val.npy", log_dice_val)
-
+        # np.save(result_dir / "loss_tra.npy", log_loss_tra)
+        # np.save(result_dir / "dice_tra.npy", log_dice_tra)
+        # np.save(result_dir / "loss_val.npy", log_loss_val)
+        # np.save(result_dir / "dice_val.npy", log_dice_val)
+        #
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
@@ -455,11 +462,11 @@ def runTraining(config: Config):
             with open(result_dir / "best_epoch.txt", "w") as f:
                 f.write(message)
 
-            best_folder = result_dir / "best_epoch"
-            if best_folder.exists():
-                rmtree(best_folder)
-            copytree(result_dir / f"iter{e:03d}", Path(best_folder))
-
+            # best_folder = result_dir / "best_epoch"
+            # if best_folder.exists():
+            #     rmtree(best_folder)
+            # copytree(result_dir / f"iter{e:03d}", Path(best_folder))
+            #
             torch.save(net.state_dict(), result_dir / "bestweights.pt")
 
     # Wait for the background logging thread to finish
