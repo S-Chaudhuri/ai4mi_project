@@ -156,7 +156,7 @@ def setup(
         dataset_cls = BoxDataset
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
-        dataset_kwargs["box_size"] = config.dataset.box_size
+        dataset_kwargs["sub_box_size"] = config.dataset.box_size
     else:
         dataset_cls = SliceDataset
         img_transform = img_transform_2d
@@ -199,9 +199,10 @@ def setup(
     return (net, optimizer, scheduler, device, train_loader, val_loader, num_classes)
 
 
-def get_loss_func(config: Config, num_classes: int):
+def get_loss_func(config: Config):
+
     if config.mode == "full":
-        idk = list(range(num_classes))
+        idk = list(range(config.dataset.num_classes))
     elif config.mode == "partial" and config.dataset.name == "SEGTHOR":
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
@@ -266,7 +267,7 @@ def runTraining(config: Config):
     if config.wandb_watch:
         wandb.watch(net, log="all", log_freq=100)
 
-    loss_fn = get_loss_func(config, num_classes)
+    loss_fn = get_loss_func(config)
 
     log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros(
@@ -421,4 +422,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

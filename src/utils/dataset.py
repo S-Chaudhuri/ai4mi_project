@@ -159,7 +159,7 @@ class BoxDataset(Dataset):
         root_dir: Path,
         img_transform=None,
         gt_transform=None,
-        sub_box_size: tuple[int, int, int] = (128, 132, 132),  # e.g., (128, 132, 132)
+        sub_box_size: Optional[tuple[int, int, int]] = None,  # e.g., (128, 132, 132)
         debug: bool = False,
     ):
         self.root_dir = Path(root_dir)
@@ -195,7 +195,7 @@ class BoxDataset(Dataset):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Crops a sub-box of shape (D_sub, H_sub, W_sub) from full (1, D_full, H_full, W_full)."""
         _, D_full, H_full, W_full = img.shape
-        D_sub, H_sub, W_sub = self.sub_box_size
+        D_sub, H_sub, W_sub = self.sub_box_size  # type: ignore
 
         d_start = random.randint(0, max(0, D_full - D_sub))
         h_start = random.randint(0, max(0, H_full - H_sub))
@@ -240,4 +240,3 @@ class BoxDataset(Dataset):
             )
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
-
