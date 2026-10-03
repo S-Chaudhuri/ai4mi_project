@@ -75,13 +75,13 @@ def img_transform_2d(img):
 
 
 def noised_img_transform(img, p: float, sigma: float):
-    img = img_transform(img)
+    img = img_transform_2d(img)
     if np.random.random() < p:
         img = img + torch.randn_like(img) * sigma
     return img.clamp(0.0, 1.0)
 
 
-def gt_transform(K, img):
+def gt_transform_2d(K, img):
     img = np.array(img)[...]
     # The idea is that the classes are mapped to {0, 255} for binary cases
     # {0, 85, 170, 255} for 4 classes
@@ -309,14 +309,6 @@ def runTraining(config: Config):
     result_dir.mkdir(parents=True, exist_ok=True)
     device_type = "cuda" if config.gpu else "cpu"
 
-    wandb.init(
-        entity="ai-for-medical-imaging",
-        project=f"{config.dataset.name}-{'3D' if config.is_3d else '2D'}",
-        config=dataclasses.asdict(config),
-        dir=autoroot.root / "results" / "wandb",
-        notes=config.notes,
-    )
-
     # Adds histogram of the gradients and parameters
     # NOTE Does add a lot of info to our project, need to see if we want that
     if config.wandb_watch:
@@ -516,9 +508,6 @@ def runTraining(config: Config):
             #
             torch.save(net.state_dict(), result_dir / "bestweights.pt")
 
-    # Wait for the background logging thread to finish
-    wandb.finish()
-
 
 def main():
     config = get_config()
@@ -528,7 +517,19 @@ def main():
 
     pprint(dataclasses.asdict(config))
 
-    runTraining(config)
+    # Setup wandb
+    wandb.init(
+        entity="ai-for-medical-imaging",
+        project=f"{config.dataset.name}-{'3D' if config.is_3d else '2D'}",
+        config=dataclasses.asdict(config),
+        dir=autoroot.root / "results" / "wandb",
+        notes=config.notes,
+    )
+
+    try:
+        runTraining(config)
+    except:
+        wandb.finish()
 
 
 if __name__ == "__main__":
