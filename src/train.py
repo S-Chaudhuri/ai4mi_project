@@ -498,7 +498,7 @@ def runTraining(config: Config):
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
-            with open(result_dir / "best_epoch.txt", "w") as f:
+            with open(result_dir / "best_epoch.txt", "a") as f:
                 f.write(message)
 
             # best_folder = result_dir / "best_epoch"
