@@ -18,6 +18,7 @@ epochs: 20
 gpu: true
 lr: 0.0005
 mode: full
+dims: 2d # Choose 2d or 3d
 model:
   factor: 2
   kernels: 8

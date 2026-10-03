@@ -91,7 +91,9 @@ def write_ignore_masks(
         imsave(str(dest_dir / f"{id_}_{idz:04d}.png"), mask, check_contrast=False)
 
 
-def process_subset(subset_dir: Path, num_classes: int, min_area: int, buffer: int) -> None:
+def process_subset(
+    subset_dir: Path, num_classes: int, min_area: int, buffer: int
+) -> None:
     gt_dir = subset_dir / "gt"
     ignore_dir = subset_dir / "ignore"
     if not gt_dir.exists():
@@ -153,7 +155,9 @@ class MaskedCrossEntropy:
         self.idk = kwargs["idk"]
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
-    def __call__(self, pred_softmax: Tensor, weak_target: Tensor, ignore: Tensor) -> Tensor:
+    def __call__(
+        self, pred_softmax: Tensor, weak_target: Tensor, ignore: Tensor
+    ) -> Tensor:
         assert pred_softmax.shape == weak_target.shape == ignore.shape
         assert simplex(pred_softmax)
         assert sset(weak_target, [0, 1])
@@ -176,11 +180,15 @@ class MaskedPartialCrossEntropy(MaskedCrossEntropy):
 def main(args: argparse.Namespace) -> None:
     sliced_dir = Path(args.sliced_dir)
     for subset in ["train", "val"]:
-        process_subset(sliced_dir / subset, args.num_classes, args.min_area, args.buffer)
+        process_subset(
+            sliced_dir / subset, args.num_classes, args.min_area, args.buffer
+        )
 
 
 def get_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Boundary-truncation ignore mask generator")
+    parser = argparse.ArgumentParser(
+        description="Boundary-truncation ignore mask generator"
+    )
     parser.add_argument("--sliced_dir", type=str, required=True)
     parser.add_argument("--num_classes", type=int, default=5)
     parser.add_argument("--min_area", type=int, default=20)
