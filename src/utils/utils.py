@@ -283,10 +283,6 @@ def normalized_surface_distance(
 def meta_hausdorff(
     percentile: float, label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
 ) -> Tensor:
-    assert label.shape == pred.shape
-    assert one_hot(label)
-    assert one_hot(pred)
-
     b, k, *_ = label.shape
     res = torch.zeros((b, k), dtype=torch.float32)
 

@@ -196,8 +196,8 @@ def build_dataloaders(config: Config):
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
-        persistent_workers=True,
-        shuffle=False,
+        persistent_workers=config.num_workers > 0,
+        shuffle=True,
     )
 
     val_set = dataset_cls(
@@ -213,7 +213,7 @@ def build_dataloaders(config: Config):
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=config.num_workers > 0,
         shuffle=False,
     )
 
