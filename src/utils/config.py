@@ -75,6 +75,9 @@ class Config:
     dropout: float = 0.01
     temperature: float = 1
 
+    fg_prob: float = 0.5                
+    batches_per_epoch: int = 20        
+
 
 def instantiate_dataclass(cls, data: dict):
     if not dataclasses.is_dataclass(cls):
