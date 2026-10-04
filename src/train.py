@@ -302,6 +302,7 @@ def runTraining(config: Config):
     net, optimizer, scheduler, device, train_loader, val_loader = setup(config)
 
     num_classes = config.dataset.num_classes
+    data_spacing = (1, 1, 1) if config.is_3d else (1, 1)
 
     result_dir = config.dest or Path(
         f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
@@ -399,10 +400,10 @@ def runTraining(config: Config):
                             pred_seg, gt
                         )  # One DSC value per sample and per class
                         log_hd95[e, j : j + batch_size, :] = hd95_coef(
-                            pred_seg, gt, spacing_mm=(1, 1)
+                            pred_seg, gt, spacing_mm=data_spacing
                         )
                         log_present[e, j : j + batch_size, :] = (
-                            gt.sum(dim=(-2, -1)) > 0
+                            gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
 
                         loss = loss_fn(pred_probs, gt)

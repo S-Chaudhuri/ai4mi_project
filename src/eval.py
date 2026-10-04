@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import autoroot
+import autoroot  # noqa
 import nibabel as nib
 import numpy as np
 import torch
@@ -12,7 +12,7 @@ from PIL import Image
 from skimage.transform import resize
 from torch.utils.data import DataLoader, Dataset
 
-from src.train import img_transform
+from src.train import img_transform_2d
 from src.models.ENet import ENet
 from src.models.ShallowNet import shallowCNN
 from src.utils.dataset import make_dataset
