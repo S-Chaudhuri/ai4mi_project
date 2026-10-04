@@ -216,12 +216,21 @@ def _asymmetric_distance(a_coords: Tensor, b_coords: Tensor) -> Tensor:
     return torch.from_numpy(dist.astype(np.float32))
 
 
+def _max_distance(shape: tuple[int, ...], spacing_mm: tuple) -> float:
+    # Worst-case distance between two surfaces: the diagonal of the volume, in mm
+    dims = np.asarray(shape[: len(spacing_mm)], dtype=np.float64)
+    spacing = np.asarray(spacing_mm, dtype=np.float64)
+    return float(np.linalg.norm(dims * spacing))
+
+
 def hausdorff_distance(
     a: np.ndarray, b: np.ndarray, spacing_mm: tuple, percentile: float
 ) -> float:
     a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
     if len(a_coords) == 0 or len(b_coords) == 0:
-        return float("inf")
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
 
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
@@ -238,7 +247,9 @@ def average_hausdorff_distance(
 ) -> float:
     a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
     if len(a_coords) == 0 or len(b_coords) == 0:
-        return float("inf")
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
 
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
