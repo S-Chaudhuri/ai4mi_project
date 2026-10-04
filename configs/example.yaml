@@ -1,0 +1,30 @@
+batch_size: 8
+betas:
+  - 0.9
+  - 0.999
+dataset:
+  fold: 0
+  name: SEGTHOR
+  num_classes: 5
+  retains: 5
+  seed: 0
+  shape:
+    - 256
+    - 256
+debug: false
+dest: null
+dropout: 0.01
+epochs: 20
+gpu: true
+lr: 0.0005
+mode: full
+dims: 2d # Choose 2d or 3d
+model:
+  factor: 2
+  kernels: 8
+  name: ENet
+num_workers: 5
+seed: 42
+temperature: 1
+wandb_watch: false
+weight_decay: 0
