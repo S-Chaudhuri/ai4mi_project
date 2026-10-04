@@ -42,7 +42,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
-from src.utils.dataset import SliceDataset, BoxDataset, GridBoxDataset
+from src.utils.dataset import SliceDataset, BoxDataset
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
 from src.models.UNet3D import UNet3D
@@ -170,12 +170,12 @@ def build_dataloaders(config: Config):
     val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
     if config.is_3d:
         dataset_cls = BoxDataset
-        val_dataset_cls = GridBoxDataset  # NEW: deterministic grid of boxes
+        val_dataset_cls = BoxDataset  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
         train_kwargs["fg_prob"] = config.fg_prob  # NEW
-        val_kwargs["overlap"] = config.val_overlap  # NEW
+        # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
         dataset_cls = SliceDataset
         val_dataset_cls = SliceDataset  # NEW
