@@ -6,7 +6,7 @@ import yaml
 import dataclasses
 from dataclasses import dataclass, field
 
-from torch import torch
+import torch
 import tyro
 
 
@@ -15,8 +15,6 @@ class DatasetConfig:
     name: Literal["TOY2", "SEGTHOR"] = "SEGTHOR"
 
     num_classes: int = 5
-
-    seed: int = 0
 
     shape: tuple[int, int] = (256, 256)
     retains: int = 5
