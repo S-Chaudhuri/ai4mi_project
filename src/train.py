@@ -82,12 +82,10 @@ def noised_img_transform(img, p: float, sigma: float):
 
 
 def gt_transform_2d(K, img):
-    img = np.array(img)[...]
-    # The idea is that the classes are mapped to {0, 255} for binary cases
-    # {0, 85, 170, 255} for 4 classes
-    # {0, 51, 102, 153, 204, 255} for 6 classes
-    # Very sketchy but that works here and that simplifies visualization
-    img = img / (255 / (K - 1)) if K != 5 else img / 63  # max <= 1
+    img = np.array(img, dtype=np.float32)[...]
+    # Classes are stored as multiples of 255/(K-1) (e.g. {0, 63, 126, 189, 252} for K=5).
+    # Round to the nearest class index so boundary values are never misassigned.
+    img = np.round(img / (255.0 / (K - 1))).astype(np.int64)
     img = torch.tensor(img, dtype=torch.int64)[
         None, ...
     ]  # Add one dimension to simulate batch
@@ -110,14 +108,14 @@ def img_transform_3d(vol: np.ndarray) -> Tensor:
 def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
     """
     Input:  vol is a 3D numpy array from stacked PNG masks (D, H, W)
-            containing values in {0, 63, 126, 189, 252}
+            containing class indices stored as multiples of 255/(K-1)
+            (e.g. {0, 63, 126, 189, 252} for K=5)
     Output: 4D float Tensor (K, D, H, W) one-hot encoded
     """
     vol = np.array(vol, dtype=np.float32)
 
-    # Convert intensity values {0, 63, 126, 189, 252} -> class indices {0, 1, 2, 3, 4}
-    # Using 63.0 step for SEGTHOR 5-class masks
-    vol = np.round(vol / 63.0).astype(np.int64)
+    # Convert stored intensities -> class indices {0, ..., K-1}, for any K
+    vol = np.round(vol / (255.0 / (K - 1))).astype(np.int64)
 
     # Add channel dimension: (1, D, H, W)
     vol_tensor = torch.from_numpy(vol)[None, ...]
