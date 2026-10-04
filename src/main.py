@@ -161,24 +161,24 @@ def build_dataloaders(config: Config):
     # Dataset part
     batch_size = config.batch_size
     num_classes = config.dataset.num_classes
-    data_root_dir = autoroot.root / "data" / config.dataset.name
+    data_root_dir = config.data_path / config.dataset.name
 
     dataset_cls: type[Dataset]
-    val_dataset_cls: type[Dataset]                    # NEW: validation can use another class
+    val_dataset_cls: type[Dataset]  # NEW: validation can use another class
     dataset_kwargs: dict[str, Any] = {}
-    train_kwargs: dict[str, Any] = {}                 # NEW: only for the training set
-    val_kwargs: dict[str, Any] = {}                   # NEW: only for the validation set
+    train_kwargs: dict[str, Any] = {}  # NEW: only for the training set
+    val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
     if config.is_3d:
         dataset_cls = BoxDataset
-        val_dataset_cls = GridBoxDataset              # NEW: deterministic grid of boxes
+        val_dataset_cls = GridBoxDataset  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
-        train_kwargs["fg_prob"] = config.fg_prob      # NEW
-        val_kwargs["overlap"] = config.val_overlap    # NEW
+        train_kwargs["fg_prob"] = config.fg_prob  # NEW
+        val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
         dataset_cls = SliceDataset
-        val_dataset_cls = SliceDataset                # NEW
+        val_dataset_cls = SliceDataset  # NEW
         img_transform = img_transform_2d
         gt_transform = partial(gt_transform_2d, num_classes)
 
@@ -189,7 +189,7 @@ def build_dataloaders(config: Config):
         gt_transform=gt_transform,
         debug=config.debug,
         **dataset_kwargs,
-        **train_kwargs,                               # NEW
+        **train_kwargs,  # NEW
     )
 
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
@@ -211,17 +211,17 @@ def build_dataloaders(config: Config):
         num_workers=config.num_workers,
         pin_memory=True,
         persistent_workers=True,
-        **train_loader_kwargs,                        # NEW: replaces shuffle=False
+        **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
-    val_set = val_dataset_cls(                        # NEW: was dataset_cls
+    val_set = val_dataset_cls(  # NEW: was dataset_cls
         "val",
         data_root_dir,
         img_transform=img_transform,
         gt_transform=gt_transform,
         debug=config.debug,
         **dataset_kwargs,
-        **val_kwargs,                                 # NEW
+        **val_kwargs,  # NEW
     )
     val_loader = DataLoader(
         val_set,

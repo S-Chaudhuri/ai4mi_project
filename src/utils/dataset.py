@@ -29,7 +29,8 @@ from torch.utils.data import Dataset
 from typing import Any, Callable, Union, List, Tuple, Dict, Optional
 import numpy as np
 from collections import defaultdict
-import torch.nn.functional as F   
+import torch.nn.functional as F
+
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
     assert subset in ["train", "val", "test"]
@@ -157,7 +158,7 @@ class BoxDataset(Dataset):
         img_transform=None,
         gt_transform=None,
         sub_box_size: Optional[Tuple[int, int, int]] = None,
-        fg_prob: float = 0.5,          # chance a box is forced to contain foreground
+        fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
     ):
         self.root_dir = Path(root_dir)
@@ -174,7 +175,9 @@ class BoxDataset(Dataset):
 
         print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
         if self.sub_box_size:
-            print(f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}")
+            print(
+                f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}"
+            )
 
     def __len__(self) -> int:
         return len(self.items)
@@ -186,9 +189,9 @@ class BoxDataset(Dataset):
 
     def _foreground_masks(self, gt: torch.Tensor) -> List[torch.Tensor]:
         """Boolean (D, H, W) mask for each foreground class present in this volume."""
-        if gt.shape[0] > 1:                       # one-hot: channel 0 = background
+        if gt.shape[0] > 1:  # one-hot: channel 0 = background
             masks = [gt[k] > 0 for k in range(1, gt.shape[0])]
-        else:                                     # label map (1, D, H, W)
+        else:  # label map (1, D, H, W)
             masks = [gt[0] == l for l in torch.unique(gt[0]) if l != 0]
         return [m for m in masks if m.any()]
 
@@ -197,17 +200,25 @@ class BoxDataset(Dataset):
         masks = self._foreground_masks(gt) if random.random() < self.fg_prob else []
 
         if masks:
-            mask = random.choice(masks)           # random class first, so rare classes get equal chance
-            coords = torch.nonzero(mask)          # voxels of that class, shape (N, 3)
+            mask = random.choice(
+                masks
+            )  # random class first, so rare classes get equal chance
+            coords = torch.nonzero(mask)  # voxels of that class, shape (N, 3)
             vox = coords[random.randrange(len(coords))].tolist()
             starts = []
             for v, size, full in zip(vox, box_size, vol_shape):
-                s = v - random.randint(0, size - 1)         # voxel lands somewhere inside the box
-                starts.append(min(max(s, 0), full - size))  # keep the box inside the volume
+                s = v - random.randint(
+                    0, size - 1
+                )  # voxel lands somewhere inside the box
+                starts.append(
+                    min(max(s, 0), full - size)
+                )  # keep the box inside the volume
             return tuple(starts)
 
         # no foreground requested (or none present): uniform random box
-        return tuple(random.randint(0, full - size) for size, full in zip(box_size, vol_shape))
+        return tuple(
+            random.randint(0, full - size) for size, full in zip(box_size, vol_shape)
+        )
 
     def _extract_sub_box(
         self, img: torch.Tensor, gt: torch.Tensor
@@ -218,17 +229,19 @@ class BoxDataset(Dataset):
 
         pd, ph, pw = max(0, d - D), max(0, h - H), max(0, w - W)
         if pd or ph or pw:
-            pad = (0, pw, 0, ph, 0, pd)           # F.pad order: W, H, D
+            pad = (0, pw, 0, ph, 0, pd)  # F.pad order: W, H, D
             valid = F.pad(torch.ones_like(img[:1]), pad, value=0)
             img = F.pad(img, pad, value=0)
             gt = F.pad(gt, pad, value=0)
             if gt.shape[0] > 1:
-                gt[0][valid[0] == 0] = 1          # padded voxels count as background
+                gt[0][valid[0] == 0] = 1  # padded voxels count as background
             _, D, H, W = img.shape
 
         ds, hs, ws = self._pick_start((D, H, W), (d, h, w), gt)
-        return (img[:, ds:ds + d, hs:hs + h, ws:ws + w],
-                gt[:, ds:ds + d, hs:hs + h, ws:ws + w])
+        return (
+            img[:, ds : ds + d, hs : hs + h, ws : ws + w],
+            gt[:, ds : ds + d, hs : hs + h, ws : ws + w],
+        )
 
     def __getitem__(self, idx: int) -> dict:
         item = self.items[idx]
@@ -236,7 +249,11 @@ class BoxDataset(Dataset):
         img_np = self._load_volume(item["images"])
         gt_np = self._load_volume(item["gts"])
 
-        img = self.img_transform(img_np) if self.img_transform else torch.from_numpy(img_np)
+        img = (
+            self.img_transform(img_np)
+            if self.img_transform
+            else torch.from_numpy(img_np)
+        )
         gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
 
         assert img.shape[1:] == gt.shape[1:], (

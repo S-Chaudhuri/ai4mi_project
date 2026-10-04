@@ -6,6 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "data" / "segthor_midterm"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "SEGTHOR_resampled"
 
+
 def resample_image(
     src_dir: Path,
     tar_dir: Path,
@@ -55,7 +56,7 @@ def resample_image(
 
     resampled_image = resampler.Execute(image)
 
-    #create folder if it does not exist
+    # create folder if it does not exist
     tar_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Save the resampled image
@@ -71,7 +72,11 @@ def resample_image(
     return resampled_image
 
 
-def resample_folder(input_dir: Path = DEFAULT_INPUT_DIR, output_dir: Path = DEFAULT_OUTPUT_DIR, target_spacing=TARGET_SPACING,):
+def resample_folder(
+    input_dir: Path = DEFAULT_INPUT_DIR,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    target_spacing=TARGET_SPACING,
+):
     """Resample every NIfTI image while preserving the input folder structure."""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -85,6 +90,7 @@ def resample_folder(input_dir: Path = DEFAULT_INPUT_DIR, output_dir: Path = DEFA
 
     # Group files by patient folder so we can process CT before GT
     from collections import defaultdict
+
     patient_files: dict = defaultdict(dict)
     # Differentiate CT and GT
     for path in image_paths:
@@ -110,7 +116,6 @@ def resample_folder(input_dir: Path = DEFAULT_INPUT_DIR, output_dir: Path = DEFA
             )
 
     print(f"Resampled {len(image_paths)} image(s) to {output_dir}")
-
 
 
 def main() -> None:
