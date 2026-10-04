@@ -6,11 +6,17 @@ import numpy as np
 import torch
 
 
-# (window center in HU, window width in HU)
+
+# (window center in HU, window width in HU (Level, Width))
 DEFAULT_WINDOWS = [
     (40,   400),   # channel 1 — soft tissue  (heart, esophagus)
     (-600, 1500),  # channel 2 — lung/air      (trachea)
     (100,  700),   # channel 3 — blood/aorta   (aorta)
+    #Other possible windows:
+    # (400, 1800), # channel 4 — bone
+    # (200,  1000),  # channel 5 — fat
+    # (50, 350),   # mediastinum — sharper contrast for esophagus borders
+    # Link: https://radiopaedia.org/articles/windowing-ct, https://en.wikipedia.org/wiki/Hounsfield_scale, https://maxillofacial.org/reference/diagnostics/radiology/ct-windows-hounsfield
 ]
 
 
@@ -33,7 +39,7 @@ def convert_to_multichannel(input_path, output_path, windows=DEFAULT_WINDOWS):
     channels = [apply_window(volume, c, w) for c, w in windows]
 
     array = np.stack(channels, axis=-1)
-    
+
     output_path.parent.mkdir(parents=True, exist_ok=True) 
     nib.save(nib.Nifti1Image(array, source.affine, source.header), output_path)
     print(f"Saved {array.shape} to {output_path}")
