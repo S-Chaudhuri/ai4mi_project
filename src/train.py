@@ -54,7 +54,7 @@ from src.utils.utils import (
     seed_all,
     tqdm_,
     dice_coef,
-    gated_dice,
+    masked_mean,
     hd95_coef,
     save_images,
 )
@@ -440,8 +440,8 @@ def runTraining(config: Config):
 
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
-                        "GDice": f"{gated_dice(log_dice[e, :j, 1:], present):05.3f}",
-                        "HD95": f"{gated_dice(log_hd95[e, :j, 1:], present):05.2f}",
+                        "GDice": f"{masked_mean(log_dice[e, :j, 1:], present):05.3f}",
+                        "HD95": f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
                     if num_classes > 2:
@@ -455,19 +455,19 @@ def runTraining(config: Config):
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
             "train/dice": log_dice_tra[e, :, 1:].mean().item(),
-            "train/gated_dice": gated_dice(
+            "train/gated_dice": masked_mean(
                 log_dice_tra[e, :, 1:], log_present_tra[e, :, 1:]
             ).item(),
-            "train/hd95": gated_dice(
+            "train/hd95": masked_mean(
                 log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
             ).item(),
             # "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
             "val/dice": log_dice_val[e, :, 1:].mean().item(),
-            "val/gated_dice": gated_dice(
+            "val/gated_dice": masked_mean(
                 log_dice_val[e, :, 1:], log_present_val[e, :, 1:]
             ).item(),
-            "val/hd95": gated_dice(
+            "val/hd95": masked_mean(
                 log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
             ).item(),
             # "val/acc": acc_val,
@@ -477,10 +477,10 @@ def runTraining(config: Config):
             for k in range(1, num_classes):
                 metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
                 metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
-                metrics[f"train/hd95_{k}"] = gated_dice(
+                metrics[f"train/hd95_{k}"] = masked_mean(
                     log_hd95_tra[e, :, k], log_present_tra[e, :, k]
                 ).item()
-                metrics[f"val/hd95_{k}"] = gated_dice(
+                metrics[f"val/hd95_{k}"] = masked_mean(
                     log_hd95_val[e, :, k], log_present_val[e, :, k]
                 ).item()
         wandb.log(metrics)

@@ -66,21 +66,6 @@ def seed_all(seed: int, gpu: bool = False):
     np.random.seed(seed)
 
 
-# NOTE Do we even want these map functions? Makes things less readable in my opinion
-
-
-def map_(fn: Callable[[A], B], iter: Iterable[A]) -> List[B]:
-    return list(map(fn, iter))
-
-
-def mmap_(fn: Callable[[A], B], iter: Iterable[A]) -> List[B]:
-    return Pool().map(fn, iter)
-
-
-def starmmap_(fn: Callable[[Tuple[A]], B], iter: Iterable[Tuple[A]]) -> List[B]:
-    return Pool().starmap(fn, iter)
-
-
 # Assert utils
 def uniq(a: Tensor) -> Set:
     return set(torch.unique(a.cpu()).numpy())
@@ -183,7 +168,7 @@ dice_coef = partial(meta_dice, "bk...->bk")
 dice_batch = partial(meta_dice, "bk...->k")  # used for 3d dice
 
 
-def gated_dice(dice: Tensor, present: Tensor) -> Tensor:
+def masked_mean(dice: Tensor, present: Tensor) -> Tensor:
     # Mean of the dice values over where the class is actually present in gt
     assert dice.shape == present.shape
     return dice.masked_fill(~present, 0.0).sum() / present.sum().clamp(min=1)
