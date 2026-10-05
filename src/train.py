@@ -569,6 +569,8 @@ def main():
         wandb.finish(exit_code=1)
         raise  # Re-raise so the traceback is printed and the job exits non-zero
 
+    wandb.finish()
+
 
 if __name__ == "__main__":
     main()
