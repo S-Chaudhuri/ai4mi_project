@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
+import autoroot
 import yaml
 
 import dataclasses
@@ -25,7 +26,7 @@ class DatasetConfig:
 
 @dataclass
 class ModelConfig:
-    name: Literal["ShallowNet", "ENet", "UNet3D"] = "ENet"
+    name: Literal["ShallowNet", "ENet", "UNet3D", "VNet3D"] = "ENet"
 
     kernels: int = 8
     factor: int = 2
@@ -82,6 +83,8 @@ class Config:
 
     num_workers: int = 5
 
+    data_path: Path = autoroot.root / "data"
+
     # Keep only a fraction (10 samples) of the datasets, to test the logics around epochs and logging easily.
     debug: bool = False
 
@@ -95,6 +98,9 @@ class Config:
     betas: tuple[float, float] = (0.9, 0.999)
     dropout: float = 0.01
     temperature: float = 1
+
+    fg_prob: float = 0.5
+    batches_per_epoch: int = 20
 
     noise_prob: float = 0.5
     noise_level: float = 0.05

@@ -1,0 +1,10 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_run
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=12:00:00
+#SBATCH --output=jobs/logs/%j/out.log
+
+uv run python /home/scur0088/project/src/main.py --epochs 50 --dataset.name SEGTHOR --is_3d --model.name UNet3D
+
