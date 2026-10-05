@@ -1,13 +1,14 @@
 import argparse
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
 import autoroot
 import yaml
+import autoroot
 
 import dataclasses
 from dataclasses import dataclass, field
 
-from torch import torch
+import torch
 import tyro
 
 
@@ -16,8 +17,6 @@ class DatasetConfig:
     name: Literal["TOY2", "SEGTHOR"] = "SEGTHOR"
 
     num_classes: int = 5
-
-    seed: int = 0
 
     shape: tuple[int, int] = (256, 256)
     retains: int = 5
@@ -35,6 +34,27 @@ class ModelConfig:
 
 
 @dataclass
+class ProfilerConfig:
+    """Optional torch.profiler settings for the training loop (off by default)."""
+
+    enabled: bool = False
+
+    record_shapes: bool = False
+    profile_memory: bool = False
+    with_stack: bool = False
+    with_flops: bool = False
+    with_modules: bool = False
+
+    # Schedule in batch steps, cycling wait -> warmup -> active
+    wait: int = 1
+    warmup: int = 1
+    active: int = 3
+
+    # Where to write chrome traces (None -> <result_dir>/profiler)
+    output_dir: Optional[Path] = None
+
+
+@dataclass
 class Config:
     # Destination directory to save the results (predictions and weights).
     dest: Optional[Path] = None
@@ -49,6 +69,8 @@ class Config:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     model: ModelConfig = field(default_factory=ModelConfig)
+
+    profiler: ProfilerConfig = field(default_factory=ProfilerConfig)
 
     epochs: int = 20
 
@@ -81,26 +103,64 @@ class Config:
     fg_prob: float = 0.5
     batches_per_epoch: int = 20
 
+    noise_prob: float = 0.5
+    noise_level: float = 0.05
+
+    notes: Optional[str] = None
+
+
+def _unwrap_optional(expected):
+    # Optional[X] is Union[X, None]; reduce it to X when unambiguous
+    if get_origin(expected) is Union:
+        non_none = [a for a in get_args(expected) if a is not type(None)]
+        if len(non_none) == 1:
+            return non_none[0]
+    return expected
+
+
+def _coerce_value(value, expected):
+    # Cast plain values loaded from yaml to the annotated type
+    if value is None:
+        return value
+
+    origin = get_origin(expected)
+    if origin is tuple:
+        return tuple(value)
+    if origin is list:
+        return list(value)
+    if expected is Path:
+        return Path(value)
+    if expected is bool:
+        return bool(value)
+    if expected is int:
+        return int(value)
+    if expected is float:
+        return float(value)
+    if expected is str:
+        return str(value)
+    return value
+
 
 def instantiate_dataclass(cls, data: dict):
     if not dataclasses.is_dataclass(cls):
         return data
 
-    field_types = {f.name: f.type for f in dataclasses.fields(cls)}
+    field_names = {f.name for f in dataclasses.fields(cls)}
+    field_types = get_type_hints(cls)
     kwargs = {}
 
     for key, value in data.items():
         # Ignore keys in yaml that don't exist in the dataclass
-        if key not in field_types:
+        if key not in field_names:
             continue
 
-        expected_type = field_types[key]
+        expected_type = _unwrap_optional(field_types[key])
 
         # If the expected field is a nested dataclass, instantiate it recursively
         if dataclasses.is_dataclass(expected_type) and isinstance(value, dict):
             kwargs[key] = instantiate_dataclass(expected_type, value)
         else:
-            kwargs[key] = value
+            kwargs[key] = _coerce_value(value, expected_type)
 
     return cls(**kwargs)  # type: ignore
 

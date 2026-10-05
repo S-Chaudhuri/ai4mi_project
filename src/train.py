@@ -28,7 +28,6 @@ import warnings
 from typing import Any
 from pathlib import Path
 from pprint import pprint
-from shutil import copytree, rmtree
 
 import torch
 from torch.optim.lr_scheduler import LRScheduler
@@ -49,12 +48,13 @@ from src.models.UNet3D import UNet3D
 from src.utils.utils import (
     Dcm,
     class2one_hot,
-    get_root_dir,
     probs2one_hot,
     probs2class,
     seed_all,
     tqdm_,
     dice_coef,
+    masked_mean,
+    hd95_coef,
     save_images,
 )
 from src.utils.losses import (
@@ -73,13 +73,18 @@ def img_transform_2d(img):
     return img
 
 
+def noised_img_transform(img, p: float, sigma: float):
+    img = img_transform_2d(img)
+    if np.random.random() < p:
+        img = img + torch.randn_like(img) * sigma
+    return img.clamp(0.0, 1.0)
+
+
 def gt_transform_2d(K, img):
-    img = np.array(img)[...]
-    # The idea is that the classes are mapped to {0, 255} for binary cases
-    # {0, 85, 170, 255} for 4 classes
-    # {0, 51, 102, 153, 204, 255} for 6 classes
-    # Very sketchy but that works here and that simplifies visualization
-    img = img / (255 / (K - 1)) if K != 5 else img / 63  # max <= 1
+    img = np.array(img, dtype=np.float32)[...]
+    # Classes are stored as multiples of 255/(K-1) (e.g. {0, 63, 126, 189, 252} for K=5).
+    # Round to the nearest class index so boundary values are never misassigned.
+    img = np.round(img / (255.0 / (K - 1))).astype(np.int64)
     img = torch.tensor(img, dtype=torch.int64)[
         None, ...
     ]  # Add one dimension to simulate batch
@@ -102,14 +107,14 @@ def img_transform_3d(vol: np.ndarray) -> Tensor:
 def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
     """
     Input:  vol is a 3D numpy array from stacked PNG masks (D, H, W)
-            containing values in {0, 63, 126, 189, 252}
+            containing class indices stored as multiples of 255/(K-1)
+            (e.g. {0, 63, 126, 189, 252} for K=5)
     Output: 4D float Tensor (K, D, H, W) one-hot encoded
     """
     vol = np.array(vol, dtype=np.float32)
 
-    # Convert intensity values {0, 63, 126, 189, 252} -> class indices {0, 1, 2, 3, 4}
-    # Using 63.0 step for SEGTHOR 5-class masks
-    vol = np.round(vol / 63.0).astype(np.int64)
+    # Convert stored intensities -> class indices {0, ..., K-1}, for any K
+    vol = np.round(vol / (255.0 / (K - 1))).astype(np.int64)
 
     # Add channel dimension: (1, D, H, W)
     vol_tensor = torch.from_numpy(vol)[None, ...]
@@ -210,7 +215,7 @@ def build_dataloaders(config: Config):
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=config.num_workers > 0,
         **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
@@ -228,9 +233,14 @@ def build_dataloaders(config: Config):
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=config.num_workers > 0,
         shuffle=False,
     )
+
+    # Store the checksum of the dataset
+    artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
+    artifect.add_reference(f"file://{data_root_dir}")
+    wandb.log_artifact(artifect)
 
     return train_loader, val_loader
 
@@ -304,6 +314,32 @@ def save_predictions(
         save_images(predicted_class * mult, stems, dest)
 
 
+def create_profiler(config: Config, out_dir: Path):
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if config.gpu:
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+    def on_trace_ready(prof: torch.profiler.profile):
+        trace_path = out_dir / f"trace_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        prof.export_chrome_trace(str(trace_path))
+        print(f">> Profiler: saved trace to {trace_path}")
+
+    return torch.profiler.profile(
+        activities=activities,
+        schedule=torch.profiler.schedule(
+            wait=config.profiler.wait,
+            warmup=config.profiler.warmup,
+            active=config.profiler.active,
+        ),
+        on_trace_ready=on_trace_ready,
+        record_shapes=config.profiler.record_shapes,
+        profile_memory=config.profiler.profile_memory,
+        with_stack=config.profiler.with_stack,
+        with_flops=config.profiler.with_flops,
+        with_modules=config.profiler.with_modules,
+    )
+
+
 def runTraining(config: Config):
     print(
         f">>> Setting up to train on {config.dataset.name} ({'3D' if config.is_3d else '2D'}) with {config.mode}"
@@ -312,6 +348,7 @@ def runTraining(config: Config):
     net, optimizer, scheduler, device, train_loader, val_loader = setup(config)
 
     num_classes = config.dataset.num_classes
+    data_spacing = (1, 1, 1) if config.is_3d else (1, 1)
 
     result_dir = config.dest or Path(
         f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
@@ -319,12 +356,13 @@ def runTraining(config: Config):
     result_dir.mkdir(parents=True, exist_ok=True)
     device_type = "cuda" if config.gpu else "cpu"
 
-    wandb.init(
-        entity="ai-for-medical-imaging",
-        project="SEGTHOR-3D",
-        config=dataclasses.asdict(config),
-        dir=get_root_dir() / "results" / "wandb",
-    )
+    profiler: torch.profiler.profile | None = None
+    if config.profiler.enabled:
+        prof_out_dir = config.profiler.output_dir or (result_dir / "profiler")
+        prof_out_dir.mkdir(parents=True, exist_ok=True)
+        profiler = create_profiler(config, prof_out_dir)
+        profiler.start()
+        print(f">> Profiler enabled, traces will be saved to {prof_out_dir}")
 
     # Adds histogram of the gradients and parameters
     # NOTE Does add a lot of info to our project, need to see if we want that
@@ -347,6 +385,32 @@ def runTraining(config: Config):
     log_dice_val: Tensor = torch.zeros(
         (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
     )
+    log_hd95_tra: Tensor = torch.zeros(
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
+    )
+    log_hd95_val: Tensor = torch.zeros(
+        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
+    )
+    log_present_tra: Tensor = torch.zeros(
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        ),  # type: ignore
+        dtype=torch.bool,
+    )
+    log_present_val: Tensor = torch.zeros(
+        (
+            config.epochs,
+            len(val_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        ),  # type: ignore
+        dtype=torch.bool,
+    )
 
     best_dice: float = 0
 
@@ -363,6 +427,8 @@ def runTraining(config: Config):
                     loader = train_loader
                     log_loss = log_loss_tra
                     log_dice = log_dice_tra
+                    log_hd95 = log_hd95_tra
+                    log_present = log_present_tra
                 case "val":
                     net.eval()
                     opt = None
@@ -371,6 +437,8 @@ def runTraining(config: Config):
                     loader = val_loader
                     log_loss = log_loss_val
                     log_dice = log_dice_val
+                    log_hd95 = log_hd95_val
+                    log_present = log_present_val
                 case _:
                     raise  # Should never be reached, but needed to silence ide warn
 
@@ -401,11 +469,17 @@ def runTraining(config: Config):
                         log_dice[e, j : j + batch_size, :] = dice_coef(
                             pred_seg, gt
                         )  # One DSC value per sample and per class
+                        log_hd95[e, j : j + batch_size, :] = hd95_coef(
+                            pred_seg, gt, spacing_mm=data_spacing
+                        )
+                        log_present[e, j : j + batch_size, :] = (
+                            gt.sum(dim=tuple(range(2, gt.ndim))) > 0
+                        )  # Per-sample, per-class: is the class in the gt?
 
-                        loss = loss_fn(pred_probs, gt)
-                        log_loss[e, i] = (
-                            loss.item()
-                        )  # One loss value per batch (averaged in the loss)
+                    # Computed outside autocast: under CUDA fp16 autocast the
+                    # einsum in the loss is promoted to fp16 and overflows
+                    loss = loss_fn(pred_probs, gt)
+                    log_loss[e, i] = loss.item()  # One loss value per batch
 
                     if opt is not None:  # Only for training
                         scaler.scale(loss).backward()
@@ -430,9 +504,16 @@ def runTraining(config: Config):
                             )
 
                     j += batch_size  # Keep in mind that _in theory_, each batch might have a different size
+                    if profiler is not None:
+                        profiler.step()
                     # For the DSC average: do not take the background class (0) into account:
+                    # HD95 and gated dice are only averaged over samples where the class is in the gt
+                    present = log_present[e, :j, 1:]
+
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
+                        "GDice": f"{masked_mean(log_dice[e, :j, 1:], present):05.3f}",
+                        "HD95": f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
                     if num_classes > 2:
@@ -446,30 +527,51 @@ def runTraining(config: Config):
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
             "train/dice": log_dice_tra[e, :, 1:].mean().item(),
+            "train/gated_dice": masked_mean(
+                log_dice_tra[e, :, 1:], log_present_tra[e, :, 1:]
+            ).item(),
+            "train/hd95": masked_mean(
+                log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
+            ).item(),
+            # "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
             "val/dice": log_dice_val[e, :, 1:].mean().item(),
+            "val/gated_dice": masked_mean(
+                log_dice_val[e, :, 1:], log_present_val[e, :, 1:]
+            ).item(),
+            "val/hd95": masked_mean(
+                log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
+            ).item(),
+            # "val/acc": acc_val,
         }
+
         if num_classes > 2:
             for k in range(1, num_classes):
                 metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
                 metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
+                metrics[f"train/hd95_{k}"] = masked_mean(
+                    log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+                ).item()
+                metrics[f"val/hd95_{k}"] = masked_mean(
+                    log_hd95_val[e, :, k], log_present_val[e, :, k]
+                ).item()
         wandb.log(metrics)
 
         # Scheduler at the end of each epoch
         scheduler.step()
 
-        # I save it at each epochs, in case the code crashes or I decide to stop it early
         # np.save(result_dir / "loss_tra.npy", log_loss_tra)
         # np.save(result_dir / "dice_tra.npy", log_dice_tra)
         # np.save(result_dir / "loss_val.npy", log_loss_val)
         # np.save(result_dir / "dice_val.npy", log_dice_val)
         #
+
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
-            with open(result_dir / "best_epoch.txt", "w") as f:
+            with open(result_dir / "best_epoch.txt", "a") as f:
                 f.write(message)
 
             # best_folder = result_dir / "best_epoch"
@@ -479,8 +581,8 @@ def runTraining(config: Config):
             #
             torch.save(net.state_dict(), result_dir / "bestweights.pt")
 
-    # Wait for the background logging thread to finish
-    wandb.finish()
+    if profiler is not None:
+        profiler.stop()
 
 
 def main():
@@ -489,9 +591,24 @@ def main():
     # Seed everything right at the beginning
     seed_all(config.seed, config.gpu)
 
+    # Setup wandb
+    wandb.init(
+        entity="ai-for-medical-imaging",
+        project=f"{config.dataset.name}-{'3D' if config.is_3d else '2D'}",
+        config=dataclasses.asdict(config),
+        dir=autoroot.root / "results" / "wandb",
+        notes=config.notes,
+    )
+
     pprint(dataclasses.asdict(config))
 
-    runTraining(config)
+    try:
+        runTraining(config)
+    except Exception:
+        wandb.finish(exit_code=1)
+        raise  # Re-raise so the traceback is printed and the job exits non-zero
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

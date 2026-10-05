@@ -23,8 +23,8 @@ from PIL import Image
 from torch import einsum, Tensor
 from skimage.io import imread, imsave
 
-from utils.dataset import SliceDataset
-from utils.utils import simplex, sset
+from src.utils.dataset import SliceDataset
+from src.utils.utils import simplex, sset
 
 
 SLICE_RE = re.compile(r"^(?P<id>.+)_(?P<idz>\d{4})\.png$")

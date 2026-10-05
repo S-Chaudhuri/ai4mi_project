@@ -86,7 +86,7 @@ def merge_patient(
 
     # res_arr = res_arr.astype(np.int16)
     res_arr //= 63  # For segthor only
-    assert set(np.unique(res_arr)) == set(range(5)), np.uint8(res_arr)
+    assert set(np.unique(res_arr)) == set(range(K)), np.uint8(res_arr)
 
     new_nib = nib.nifti1.Nifti1Image(  # type: ignore
         res_arr, affine=orig_nib.affine, header=orig_nib.header
@@ -159,7 +159,7 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--dest_folder", type=Path, required=True)
     parser.add_argument("--grp_regex", type=str, required=True)
 
-    parser.add_argument("--num_classes", type=int, default=4)
+    parser.add_argument("--num_classes", type=int, default=5)
 
     args = parser.parse_args()
 

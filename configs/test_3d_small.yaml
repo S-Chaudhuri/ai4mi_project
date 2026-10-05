@@ -1,0 +1,21 @@
+batch_size: 2
+dataset:
+  name: SEGTHOR_small
+  num_classes: 5
+  box_size:
+    - 64
+    - 64
+    - 64
+  retains: 2
+  fold: 0
+is_3d: true
+model:
+  name: UNet3D
+  kernels: 8
+  factor: 2
+epochs: 1
+loss: ce
+mode: full
+gpu: true
+num_workers: 4
+seed: 42

@@ -33,6 +33,7 @@ from PIL import Image
 from tqdm import tqdm
 from torch import Tensor, einsum
 from scipy import ndimage
+from scipy.spatial import cKDTree
 
 
 tqdm_ = partial(
@@ -54,12 +55,6 @@ A = TypeVar("A")
 B = TypeVar("B")
 
 
-# This works based on relative path of this utils.py. So if the file that contains this
-# function isn't in src/utils/ , this fails.
-def get_root_dir():
-    return Path(__file__).parent.parent.parent.resolve()
-
-
 def seed_all(seed: int, gpu: bool = False):
     torch.manual_seed(seed)
     if gpu:
@@ -69,21 +64,6 @@ def seed_all(seed: int, gpu: bool = False):
 
     random.seed(seed)
     np.random.seed(seed)
-
-
-# NOTE Do we even want these map functions? Makes things less readable in my opinion
-
-
-def map_(fn: Callable[[A], B], iter: Iterable[A]) -> List[B]:
-    return list(map(fn, iter))
-
-
-def mmap_(fn: Callable[[A], B], iter: Iterable[A]) -> List[B]:
-    return Pool().map(fn, iter)
-
-
-def starmmap_(fn: Callable[[Tuple[A]], B], iter: Iterable[Tuple[A]]) -> List[B]:
-    return Pool().starmap(fn, iter)
 
 
 # Assert utils
@@ -188,7 +168,7 @@ dice_coef = partial(meta_dice, "bk...->bk")
 dice_batch = partial(meta_dice, "bk...->k")  # used for 3d dice
 
 
-def gated_dice(dice: Tensor, present: Tensor) -> Tensor:
+def masked_mean(dice: Tensor, present: Tensor) -> Tensor:
     # Mean of the dice values over where the class is actually present in gt
     assert dice.shape == present.shape
     return dice.masked_fill(~present, 0.0).sum() / present.sum().clamp(min=1)
@@ -230,7 +210,17 @@ def _surface_coords(mask: np.ndarray, spacing_mm: tuple) -> Tensor:
 
 
 def _asymmetric_distance(a_coords: Tensor, b_coords: Tensor) -> Tensor:
-    return torch.cdist(a_coords, b_coords).min(dim=1).values
+    a = a_coords.numpy().astype(np.float64)
+    b = b_coords.numpy().astype(np.float64)
+    dist, _ = cKDTree(b).query(a, k=1)
+    return torch.from_numpy(dist.astype(np.float32))
+
+
+def _max_distance(shape: tuple[int, ...], spacing_mm: tuple) -> float:
+    # Worst-case distance between two surfaces: the diagonal of the volume, in mm
+    dims = np.asarray(shape[: len(spacing_mm)], dtype=np.float64)
+    spacing = np.asarray(spacing_mm, dtype=np.float64)
+    return float(np.linalg.norm(dims * spacing))
 
 
 def hausdorff_distance(
@@ -238,13 +228,17 @@ def hausdorff_distance(
 ) -> float:
     a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
     if len(a_coords) == 0 or len(b_coords) == 0:
-        return float("inf")
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
 
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
 
-    q = percentile / 100.0
+    if percentile >= 100.0:
+        return torch.max(dist_ab.max(), dist_ba.max()).item()
 
+    q = percentile / 100.0
     return torch.max(torch.quantile(dist_ab, q), torch.quantile(dist_ba, q)).item()
 
 
@@ -253,7 +247,9 @@ def average_hausdorff_distance(
 ) -> float:
     a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
     if len(a_coords) == 0 or len(b_coords) == 0:
-        return float("inf")
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
 
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
@@ -283,10 +279,6 @@ def normalized_surface_distance(
 def meta_hausdorff(
     percentile: float, label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
 ) -> Tensor:
-    assert label.shape == pred.shape
-    assert one_hot(label)
-    assert one_hot(pred)
-
     b, k, *_ = label.shape
     res = torch.zeros((b, k), dtype=torch.float32)
 

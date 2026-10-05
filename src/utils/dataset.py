@@ -150,6 +150,12 @@ def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
     return items
 
 
+def load_volume(slice_paths: List[Path]) -> np.ndarray:
+    """Stacks 2D PNG slices along axis 0. Output shape: (D, H, W)"""
+    slices = [np.array(Image.open(p)) for p in slice_paths]
+    return np.stack(slices, axis=0)
+
+
 class BoxDataset(Dataset):
     def __init__(
         self,
@@ -173,7 +179,17 @@ class BoxDataset(Dataset):
         if self.debug:
             self.items = self.items[:10]
 
-        print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
+        # Load every patient volume into RAM once; __getitem__ never touches disk.
+        for item in self.items:
+            item["img_vol"] = load_volume(item["images"])
+            item["gt_vol"] = load_volume(item["gts"])
+            del item["images"], item["gts"]
+
+        n_vox = sum(v["img_vol"].size for v in self.items)
+        print(
+            f">> Created {subset} dataset with {len(self.items)} 3D patient volumes."
+        )
+        print(f"   Loaded all slices into RAM: {n_vox * 2 / 1e6:.0f} MB (img+gt, uint8).")
         if self.sub_box_size:
             print(
                 f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}"
@@ -181,11 +197,6 @@ class BoxDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.items)
-
-    def _load_volume(self, slice_paths: List[Path]) -> np.ndarray:
-        """Stacks 2D PNGs along axis 0. Output shape: (D, H, W)"""
-        slices = [np.array(Image.open(p)) for p in slice_paths]
-        return np.stack(slices, axis=0)
 
     def _foreground_masks(self, gt: torch.Tensor) -> List[torch.Tensor]:
         """Boolean (D, H, W) mask for each foreground class present in this volume."""
@@ -246,8 +257,8 @@ class BoxDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         item = self.items[idx]
 
-        img_np = self._load_volume(item["images"])
-        gt_np = self._load_volume(item["gts"])
+        img_np = item["img_vol"]
+        gt_np = item["gt_vol"]
 
         img = (
             self.img_transform(img_np)
@@ -267,8 +278,6 @@ class BoxDataset(Dataset):
             )
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
-<<<<<<< HEAD
-=======
 
 
 def window_starts(full: int, size: int, step: int) -> List[int]:
@@ -291,11 +300,18 @@ class GridBoxDataset(BoxDataset):
         img_transform=None,
         gt_transform=None,
         sub_box_size: Tuple[int, int, int] = (128, 128, 128),
-        overlap: float = 0.5,            # 0.5 = each box overlaps its neighbour by half
+        overlap: float = 0.5,  # 0.5 = each box overlaps its neighbour by half
         debug: bool = False,
     ):
-        super().__init__(subset, root_dir, img_transform, gt_transform,
-                         sub_box_size=sub_box_size, fg_prob=0.0, debug=debug)
+        super().__init__(
+            subset,
+            root_dir,
+            img_transform,
+            gt_transform,
+            sub_box_size=sub_box_size,
+            fg_prob=0.0,
+            debug=debug,
+        )
         self.overlap = overlap
 
         step = [max(1, int(s * (1 - overlap))) for s in sub_box_size]
@@ -304,14 +320,15 @@ class GridBoxDataset(BoxDataset):
         # (patient index, depth start, height start, width start) for every box
         self.boxes: List[Tuple[int, int, int, int]] = []
         for pi, item in enumerate(self.items):
-            D = len(item["images"])
-            W_img, H_img = Image.open(item["images"][0]).size   # PIL gives (width, height); reads only the header
+            D, H_img, W_img = item["img_vol"].shape
             for ds in window_starts(D, d, step[0]):
                 for hs in window_starts(H_img, h, step[1]):
                     for ws in window_starts(W_img, w, step[2]):
                         self.boxes.append((pi, ds, hs, ws))
 
-        print(f"   Grid: overlap {overlap:.0%}, {len(self.boxes)} boxes from {len(self.items)} patients")
+        print(
+            f"   Grid: overlap {overlap:.0%}, {len(self.boxes)} boxes from {len(self.items)} patients"
+        )
 
     def __len__(self) -> int:
         return len(self.boxes)
@@ -321,11 +338,15 @@ class GridBoxDataset(BoxDataset):
         item = self.items[pi]
         d, h, w = self.sub_box_size
 
-        # Load only the d slices this box needs, then crop height and width
-        img_np = self._load_volume(item["images"][ds:ds + d])[:, hs:hs + h, ws:ws + w]
-        gt_np = self._load_volume(item["gts"][ds:ds + d])[:, hs:hs + h, ws:ws + w]
+        # Crop the box from the in-RAM volumes (copy so it is contiguous)
+        img_np = item["img_vol"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
+        gt_np = item["gt_vol"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
 
-        img = self.img_transform(img_np) if self.img_transform else torch.from_numpy(img_np)
+        img = (
+            self.img_transform(img_np)
+            if self.img_transform
+            else torch.from_numpy(img_np)
+        )
         gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
 
         # Pad at the end if the volume is smaller than the box on some axis
@@ -337,7 +358,7 @@ class GridBoxDataset(BoxDataset):
             img = F.pad(img, pad, value=0)
             gt = F.pad(gt, pad, value=0)
             if gt.shape[0] > 1:
-                gt[0][valid[0] == 0] = 1          # padded voxels count as background
+                gt[0][valid[0] == 0] = 1  # padded voxels count as background
 
         assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
             f"Box shape {tuple(img.shape[1:])} does not match expected {self.sub_box_size}"
@@ -348,4 +369,3 @@ class GridBoxDataset(BoxDataset):
             "gts": gt,
             "stems": f"{item['stem']}_d{ds}_h{hs}_w{ws}",
         }
->>>>>>> e8f4180 (added girdboxsampling)
