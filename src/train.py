@@ -386,17 +386,29 @@ def runTraining(config: Config):
         (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
-        (config.epochs, len(train_loader.dataset), num_classes)  # type: ignore
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset), num_classes)  # type: ignore
+        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
-        (config.epochs, len(train_loader.dataset), num_classes),  # type: ignore
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        ),  # type: ignore
         dtype=torch.bool,
     )
     log_present_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset), num_classes),  # type: ignore
+        (
+            config.epochs,
+            len(val_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        ),  # type: ignore
         dtype=torch.bool,
     )
 
