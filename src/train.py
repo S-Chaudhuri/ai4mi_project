@@ -28,7 +28,6 @@ import warnings
 from typing import Any
 from pathlib import Path
 from pprint import pprint
-from shutil import copytree, rmtree
 
 import torch
 from torch.optim.lr_scheduler import LRScheduler
@@ -292,6 +291,32 @@ def save_predictions(
         save_images(predicted_class * mult, stems, dest)
 
 
+def create_profiler(config: Config, out_dir: Path):
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if config.gpu:
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+    def on_trace_ready(prof: torch.profiler.profile):
+        trace_path = out_dir / f"trace_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        prof.export_chrome_trace(str(trace_path))
+        print(f">> Profiler: saved trace to {trace_path}")
+
+    return torch.profiler.profile(
+        activities=activities,
+        schedule=torch.profiler.schedule(
+            wait=config.profiler.wait,
+            warmup=config.profiler.warmup,
+            active=config.profiler.active,
+        ),
+        on_trace_ready=on_trace_ready,
+        record_shapes=config.profiler.record_shapes,
+        profile_memory=config.profiler.profile_memory,
+        with_stack=config.profiler.with_stack,
+        with_flops=config.profiler.with_flops,
+        with_modules=config.profiler.with_modules,
+    )
+
+
 def runTraining(config: Config):
     print(
         f">>> Setting up to train on {config.dataset.name} ({'3D' if config.is_3d else '2D'}) with {config.mode}"
@@ -307,6 +332,14 @@ def runTraining(config: Config):
     )
     result_dir.mkdir(parents=True, exist_ok=True)
     device_type = "cuda" if config.gpu else "cpu"
+
+    profiler: torch.profiler.profile | None = None
+    if config.profiler.enabled:
+        prof_out_dir = config.profiler.output_dir or (result_dir / "profiler")
+        prof_out_dir.mkdir(parents=True, exist_ok=True)
+        profiler = create_profiler(config, prof_out_dir)
+        profiler.start()
+        print(f">> Profiler enabled, traces will be saved to {prof_out_dir}")
 
     # Adds histogram of the gradients and parameters
     # NOTE Does add a lot of info to our project, need to see if we want that
@@ -432,6 +465,8 @@ def runTraining(config: Config):
                             )
 
                     j += batch_size  # Keep in mind that _in theory_, each batch might have a different size
+                    if profiler is not None:
+                        profiler.step()
                     # For the DSC average: do not take the background class (0) into account:
                     # HD95 and gated dice are only averaged over samples where the class is in the gt
                     present = log_present[e, :j, 1:]
@@ -506,6 +541,9 @@ def runTraining(config: Config):
             # copytree(result_dir / f"iter{e:03d}", Path(best_folder))
             #
             torch.save(net.state_dict(), result_dir / "bestweights.pt")
+
+    if profiler is not None:
+        profiler.stop()
 
 
 def main():
