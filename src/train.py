@@ -35,7 +35,7 @@ import wandb
 import numpy as np
 import torch.nn.functional as F
 from torch import nn, Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from functools import partial
 import autoroot  # noqa     Do not remove
@@ -166,17 +166,24 @@ def build_dataloaders(config: Config):
     # Dataset part
     batch_size = config.batch_size
     num_classes = config.dataset.num_classes
-    data_root_dir = autoroot.root / "data" / config.dataset.name
+    data_root_dir = config.data_path / config.dataset.name
 
     dataset_cls: type[Dataset]
+    val_dataset_cls: type[Dataset]  # NEW: validation can use another class
     dataset_kwargs: dict[str, Any] = {}
+    train_kwargs: dict[str, Any] = {}  # NEW: only for the training set
+    val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
     if config.is_3d:
         dataset_cls = BoxDataset
+        val_dataset_cls = BoxDataset  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
+        train_kwargs["fg_prob"] = config.fg_prob  # NEW
+        # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
         dataset_cls = SliceDataset
+        val_dataset_cls = SliceDataset  # NEW
         img_transform = img_transform_2d
         gt_transform = partial(gt_transform_2d, num_classes)
 
@@ -187,23 +194,39 @@ def build_dataloaders(config: Config):
         gt_transform=gt_transform,
         debug=config.debug,
         **dataset_kwargs,
+        **train_kwargs,  # NEW
     )
+
+    # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
+    train_loader_kwargs: dict[str, Any]
+    if config.is_3d:
+        train_loader_kwargs = {
+            "sampler": RandomSampler(
+                train_set,
+                replacement=True,
+                num_samples=config.batches_per_epoch * batch_size,
+            )
+        }
+    else:
+        train_loader_kwargs = {"shuffle": False}
+
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size,
         num_workers=config.num_workers,
         pin_memory=True,
         persistent_workers=config.num_workers > 0,
-        shuffle=True,
+        **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
-    val_set = dataset_cls(
+    val_set = val_dataset_cls(  # NEW: was dataset_cls
         "val",
         data_root_dir,
         img_transform=img_transform,
         gt_transform=gt_transform,
         debug=config.debug,
         **dataset_kwargs,
+        **val_kwargs,  # NEW
     )
     val_loader = DataLoader(
         val_set,
@@ -352,11 +375,15 @@ def runTraining(config: Config):
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros(
-        (config.epochs, len(train_loader.dataset), num_classes)  # type: ignore
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_loss_val: Tensor = torch.zeros((config.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset), num_classes)  # type: ignore
+        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
         (config.epochs, len(train_loader.dataset), num_classes)  # type: ignore
@@ -568,6 +595,8 @@ def main():
     except Exception:
         wandb.finish(exit_code=1)
         raise  # Re-raise so the traceback is printed and the job exits non-zero
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

@@ -7,3 +7,4 @@
 #SBATCH --output=logs/%j/out.log
 
 uv run python -O /home/scur0088/project/src/train.py --data_dir /scratch-shared/scur0088/data --epochs 30 --dataset.name SEGTHOR --is_3d --model.name UNet3D 
+

@@ -1,6 +1,7 @@
 torch
 numpy
 nibabel
+SimpleITK
 torchvision
 tqdm
 pillow

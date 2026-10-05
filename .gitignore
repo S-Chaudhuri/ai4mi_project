@@ -2,6 +2,7 @@ data/*
 !data/*.b3sum
 !data/*.sha256
 results/
+result/
 volumes/
 ai4mi/
 personal/
@@ -14,5 +15,4 @@ wandb/
 
 .vscode/
 logs/
-
 

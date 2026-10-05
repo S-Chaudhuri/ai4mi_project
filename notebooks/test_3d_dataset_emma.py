@@ -1,124 +1,116 @@
-#!/usr/bin/env python3
-"""
-3D Volumetric Construction Test
-Verifies that 2D PNG slice groups are correctly assembled into 3D volumes.
-"""
-
-from pathlib import Path
+import random
 from functools import partial
+from pathlib import Path
+
 import numpy as np
 import torch
-import autoroot  # noqa
+import matplotlib
 
-# Import pipeline components
-from src.main import img_transform_3d, gt_transform_3d
+matplotlib.use("Agg")  # saves to file, works without a display
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+from tqdm import tqdm
+
 from src.utils.dataset import BoxDataset
+from src.utils.utils import class2one_hot
+
+# ---- settings -------------------------------------------------------------
+DATA_ROOT = Path("data/SEGTHOR")
+BOX_SIZE = (128, 128, 128)
+NUM_CLASSES = 5
+N_SHOW = 6  # boxes shown in the picture
+N_STATS = 10  # boxes drawn per setting for the statistics (raise for smoother numbers)
+SEED = 0
 
 
-def test_volumetric_structure():
-    print("==================================================")
-    print("      TESTING 3D VOLUMETRIC DATA CONSTRUCTION     ")
-    print("==================================================\n")
+# ---- same transforms as in your training script ---------------------------
+def img_transform_3d(vol):
+    vol = vol.astype(np.float32) / 255.0
+    t = torch.from_numpy(vol)
+    return t.unsqueeze(0) if t.ndim == 3 else t
 
-    dataset_name = "SEGTHOR"
-    data_dir = autoroot.root / "data" / dataset_name
-    num_classes = 5
 
-    if not data_dir.exists():
-        print(f"Error: Path '{data_dir}' not found.")
-        return
+def gt_transform_3d(K, vol):
+    vol = np.round(np.array(vol, dtype=np.float32) / 63.0).astype(np.int64)
+    return class2one_hot(torch.from_numpy(vol)[None, ...], K=K)[0]
 
-    # 1. Instantiate Dataset
-    dataset = BoxDataset(
-        subset="train",
-        root_dir=data_dir,
+
+gt_t = partial(gt_transform_3d, NUM_CLASSES)
+
+
+def make_ds(fg_prob):
+    return BoxDataset(
+        "train",
+        DATA_ROOT,
         img_transform=img_transform_3d,
-        gt_transform=partial(gt_transform_3d, num_classes),
-        sub_box_size=(128, 128, 128),  # Returns sub-box crop of shape (128, 128, 132)
+        gt_transform=gt_t,
+        sub_box_size=BOX_SIZE,
+        fg_prob=fg_prob,
     )
 
-    if len(dataset) == 0:
-        print("Error: No items found in dataset.")
-        return
 
-    print(f"Dataset loaded. Total 3D volumes found: {len(dataset)}\n")
+# ---- 1. statistics: fg_prob 0.0 vs 0.5 vs 1.0 ----------------------------
+random.seed(SEED)
+settings = [0.0, 0.5, 1.0]
+results = {}
 
-    # 2. Inspect First Sample
-    sample = dataset[0]
-    img = sample["images"]
-    gt = sample["gts"]
-    stem = sample["stems"]
+for p in settings:
+    ds = make_ds(p)
+    present = np.zeros(NUM_CLASSES)
+    for _ in tqdm(range(N_STATS), desc=f"Stats  fg_prob={p:.1f}", unit="box"):
+        box = ds[random.randrange(len(ds))]
+        assert tuple(box["images"].shape) == (1, *BOX_SIZE)
+        assert tuple(box["gts"].shape) == (NUM_CLASSES, *BOX_SIZE)
+        present += (box["gts"].flatten(1).sum(1) > 0).numpy()
+    results[p] = present / N_STATS
 
-    print(f"Patient Identifier / Stem: '{stem}'")
+print(
+    f"\nFraction of boxes that contain each class ({N_STATS} random boxes per setting)"
+)
+print(f"{'fg_prob':>8} | " + " | ".join(f"class {k}" for k in range(1, NUM_CLASSES)))
+for p in settings:
     print(
-        f"Image Tensor Shape       : {img.shape}  --> (Channels, Depth, Height, Width)"
-    )
-    print(f"GT Tensor Shape          : {gt.shape}  --> (Classes, Depth, Height, Width)")
-
-    # 3. Dimensionality Checks
-    print("\n--- Dimensionality Checks ---")
-
-    # Verify 4D Tensor Output (C, D, H, W)
-    if img.ndim == 4:
-        print("  [PASS] Image is a 4D Tensor (1, D, H, W)")
-    else:
-        print(f"  [FAIL] Expected 4D tensor, got {img.ndim}D shape: {img.shape}")
-
-    # Verify Depth Dimension (D > 1)
-    C, D, H, W = img.shape
-    if D > 1:
-        print(f"  [PASS] Successfully stacked {D} axial slices into 3D Depth dimension")
-    else:
-        print(
-            f"  [FAIL] Depth dimension is {D}. Expected D > 1 slices stacked together."
-        )
-
-    # Verify 2D Spatial Consistency (H, W)
-    print(f"  [INFO] Volume 2D Slice Resolution: {H} x {W}")
-
-    # 4. Content Verification across Slices
-    print("\n--- Slice Continuity Check ---")
-
-    # Calculate slice-wise mean intensity along the Depth axis (dim 1)
-    slice_means = img[0].mean(dim=(1, 2)).numpy()  # Mean intensity per slice
-
-    print(f"  - First slice mean intensity : {slice_means[0]:.4f}")
-    print(f"  - Middle slice mean intensity: {slice_means[D // 2]:.4f}")
-    print(f"  - Last slice mean intensity  : {slice_means[-1]:.4f}")
-
-    # Check if intensity varies across slices (proves distinct slices were loaded, not duplicate copies)
-    if not np.allclose(slice_means[0], slice_means[D // 2]):
-        print(
-            "  [PASS] Slices contain distinct volumetric spatial content across depth"
-        )
-    else:
-        print(
-            "  [WARNING] Slice intensities are identical across depth. Verify slice ordering."
-        )
-
-    # 5. One-Hot Spatial Consistency
-    print("\n--- Ground Truth Class Channel Check ---")
-    present_classes = torch.nonzero(gt.sum(dim=(1, 2, 3))).flatten().tolist()
-    print(
-        f"  - Organ classes present in this volume: {present_classes} / {list(range(num_classes))}"
+        f"{p:>8.1f} | "
+        + " | ".join(f"{results[p][k]:7.0%}" for k in range(1, NUM_CLASSES))
     )
 
-    # Check sum along class dimension equals 1 for all voxels
-    class_sum = gt.sum(dim=0)
-    if torch.allclose(class_sum, torch.ones_like(class_sum)):
-        print(
-            "  [PASS] One-hot encoding valid: Every voxel sums to 1 across class channels"
-        )
-    else:
-        print(
-            "  [FAIL] Invalid one-hot encoding: Voxels do not sum to 1 across classes"
-        )
+# ---- 2. picture of random boxes (fg_prob = 0.5) ---------------------------
+random.seed(SEED)
+ds = make_ds(0.5)
+colors = ["none", "tab:red", "tab:green", "tab:blue", "tab:orange"]
+cmap = ListedColormap(colors[:NUM_CLASSES])
 
-    print("\n==================================================")
-    print("          VOLUMETRIC VERIFICATION COMPLETE        ")
-    print("==================================================")
+fig, axes = plt.subplots(N_SHOW, 2, figsize=(7, 3.2 * N_SHOW))
+for r in tqdm(range(N_SHOW), desc="Picture", unit="box"):
+    box = ds[random.randrange(len(ds))]
+    img = box["images"][0].numpy()  # (D, H, W)
+    lab = box["gts"].argmax(0).numpy()  # (D, H, W) class indices
 
+    fg_per_slice = (lab > 0).sum(axis=(1, 2))
+    z = int(fg_per_slice.argmax()) if fg_per_slice.max() > 0 else BOX_SIZE[0] // 2
 
-if __name__ == "__main__":
-    test_volumetric_structure()
+    classes = [int(c) for c in np.unique(lab) if c > 0]
+    axes[r, 0].imshow(img[z], cmap="gray", vmin=0, vmax=1)
+    axes[r, 0].set_title(f"{box['stems']}  slice {z}", fontsize=9)
+    axes[r, 1].imshow(img[z], cmap="gray", vmin=0, vmax=1)
+    axes[r, 1].imshow(
+        np.ma.masked_equal(lab[z], 0),
+        cmap=cmap,
+        vmin=0,
+        vmax=NUM_CLASSES - 1,
+        alpha=0.6,
+        interpolation="nearest",
+    )
+    axes[r, 1].set_title(
+        f"classes in box: {classes if classes else 'none'}", fontsize=9
+    )
+    for a in axes[r]:
+        a.axis("off")
 
+fig.suptitle(
+    "Random boxes (fg_prob=0.5). Red=1, green=2, blue=3, orange=4", fontsize=10
+)
+fig.tight_layout()
+out = Path("box_samples.png")
+fig.savefig(out, dpi=120)
+print(f"\nSaved {out.resolve()}")
