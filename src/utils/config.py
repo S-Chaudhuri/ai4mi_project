@@ -28,7 +28,7 @@ class DatasetConfig:
 
 @dataclass
 class ModelConfig:
-    name: Literal["ShallowNet", "ENet", "UNet3D"] = "ENet"
+    name: Literal["ShallowNet", "ENet", "UNet3D", "VNet3D"] = "ENet"
 
     kernels: int = 8
     factor: int = 2

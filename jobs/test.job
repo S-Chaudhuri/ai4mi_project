@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --job-name=test_wandb
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=02:00:00
+#SBATCH --output=jobs/logs/%j/out.log
+
+# Ensure that uv is in path
+export PATH="$HOME/.local/bin:$PATH"
+
+uv run python main.py --dest result/run_%j/
