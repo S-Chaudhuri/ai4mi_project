@@ -267,3 +267,85 @@ class BoxDataset(Dataset):
             )
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
+<<<<<<< HEAD
+=======
+
+
+def window_starts(full: int, size: int, step: int) -> List[int]:
+    """Start positions along one axis; the last box is pushed back so it touches the end."""
+    if full <= size:
+        return [0]
+    starts = list(range(0, full - size + 1, step))
+    if starts[-1] != full - size:
+        starts.append(full - size)
+    return starts
+
+
+class GridBoxDataset(BoxDataset):
+    """Deterministic validation boxes: a fixed grid over every patient, with overlap."""
+
+    def __init__(
+        self,
+        subset: str,
+        root_dir: Path,
+        img_transform=None,
+        gt_transform=None,
+        sub_box_size: Tuple[int, int, int] = (128, 128, 128),
+        overlap: float = 0.5,            # 0.5 = each box overlaps its neighbour by half
+        debug: bool = False,
+    ):
+        super().__init__(subset, root_dir, img_transform, gt_transform,
+                         sub_box_size=sub_box_size, fg_prob=0.0, debug=debug)
+        self.overlap = overlap
+
+        step = [max(1, int(s * (1 - overlap))) for s in sub_box_size]
+        d, h, w = sub_box_size
+
+        # (patient index, depth start, height start, width start) for every box
+        self.boxes: List[Tuple[int, int, int, int]] = []
+        for pi, item in enumerate(self.items):
+            D = len(item["images"])
+            W_img, H_img = Image.open(item["images"][0]).size   # PIL gives (width, height); reads only the header
+            for ds in window_starts(D, d, step[0]):
+                for hs in window_starts(H_img, h, step[1]):
+                    for ws in window_starts(W_img, w, step[2]):
+                        self.boxes.append((pi, ds, hs, ws))
+
+        print(f"   Grid: overlap {overlap:.0%}, {len(self.boxes)} boxes from {len(self.items)} patients")
+
+    def __len__(self) -> int:
+        return len(self.boxes)
+
+    def __getitem__(self, idx: int) -> dict:
+        pi, ds, hs, ws = self.boxes[idx]
+        item = self.items[pi]
+        d, h, w = self.sub_box_size
+
+        # Load only the d slices this box needs, then crop height and width
+        img_np = self._load_volume(item["images"][ds:ds + d])[:, hs:hs + h, ws:ws + w]
+        gt_np = self._load_volume(item["gts"][ds:ds + d])[:, hs:hs + h, ws:ws + w]
+
+        img = self.img_transform(img_np) if self.img_transform else torch.from_numpy(img_np)
+        gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
+
+        # Pad at the end if the volume is smaller than the box on some axis
+        _, D, H, W = img.shape
+        pd, ph, pw = max(0, d - D), max(0, h - H), max(0, w - W)
+        if pd or ph or pw:
+            pad = (0, pw, 0, ph, 0, pd)
+            valid = F.pad(torch.ones_like(img[:1]), pad, value=0)
+            img = F.pad(img, pad, value=0)
+            gt = F.pad(gt, pad, value=0)
+            if gt.shape[0] > 1:
+                gt[0][valid[0] == 0] = 1          # padded voxels count as background
+
+        assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
+            f"Box shape {tuple(img.shape[1:])} does not match expected {self.sub_box_size}"
+        )
+
+        return {
+            "images": img,
+            "gts": gt,
+            "stems": f"{item['stem']}_d{ds}_h{hs}_w{ws}",
+        }
+>>>>>>> e8f4180 (added girdboxsampling)
