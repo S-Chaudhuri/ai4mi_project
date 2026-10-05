@@ -437,10 +437,10 @@ def runTraining(config: Config):
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
 
-                        loss = loss_fn(pred_probs, gt)
-                        log_loss[e, i] = (
-                            loss.item()
-                        )  # One loss value per batch (averaged in the loss)
+                    # Computed outside autocast: under CUDA fp16 autocast the
+                    # einsum in the loss is promoted to fp16 and overflows
+                    loss = loss_fn(pred_probs, gt)
+                    log_loss[e, i] = loss.item()  # One loss value per batch
 
                     if opt is not None:  # Only for training
                         scaler.scale(loss).backward()
@@ -552,8 +552,6 @@ def main():
     # Seed everything right at the beginning
     seed_all(config.seed, config.gpu)
 
-    pprint(dataclasses.asdict(config))
-
     # Setup wandb
     wandb.init(
         entity="ai-for-medical-imaging",
@@ -563,10 +561,13 @@ def main():
         notes=config.notes,
     )
 
+    pprint(dataclasses.asdict(config))
+
     try:
         runTraining(config)
-    except:
-        wandb.finish()
+    except Exception:
+        wandb.finish(exit_code=1)
+        raise  # Re-raise so the traceback is printed and the job exits non-zero
 
 
 if __name__ == "__main__":
