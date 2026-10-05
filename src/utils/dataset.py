@@ -29,6 +29,7 @@ from torch.utils.data import Dataset
 from typing import Any, Callable, Union, List, Tuple, Dict, Optional
 import numpy as np
 from collections import defaultdict
+import torch.nn.functional as F
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -149,9 +150,6 @@ def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
     return items
 
 
-"""Currently this only gives a single box per sample, so we should update this in"""
-
-
 class BoxDataset(Dataset):
     def __init__(
         self,
@@ -159,7 +157,8 @@ class BoxDataset(Dataset):
         root_dir: Path,
         img_transform=None,
         gt_transform=None,
-        sub_box_size: Optional[tuple[int, int, int]] = None,  # e.g., (128, 132, 132)
+        sub_box_size: Optional[Tuple[int, int, int]] = None,
+        fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
     ):
         self.root_dir = Path(root_dir)
@@ -167,6 +166,7 @@ class BoxDataset(Dataset):
         self.img_transform = img_transform
         self.gt_transform = gt_transform
         self.sub_box_size = sub_box_size
+        self.fg_prob = fg_prob
         self.debug = debug
 
         self.items = make_3d_dataset(self.root_dir, self.subset)
@@ -175,46 +175,73 @@ class BoxDataset(Dataset):
 
         print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
         if self.sub_box_size:
-            print(f"   Using sub-box extraction size: {self.sub_box_size}")
+            print(
+                f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}"
+            )
 
     def __len__(self) -> int:
-        """Returns total number of 3D patient volume samples in dataset."""
         return len(self.items)
 
     def _load_volume(self, slice_paths: List[Path]) -> np.ndarray:
-        """Loads a list of 2D PNG file paths and stacks them along the depth axis (axis=0).
-
-        Output shape: (D, H, W)
-        """
-
+        """Stacks 2D PNGs along axis 0. Output shape: (D, H, W)"""
         slices = [np.array(Image.open(p)) for p in slice_paths]
         return np.stack(slices, axis=0)
+
+    def _foreground_masks(self, gt: torch.Tensor) -> List[torch.Tensor]:
+        """Boolean (D, H, W) mask for each foreground class present in this volume."""
+        if gt.shape[0] > 1:  # one-hot: channel 0 = background
+            masks = [gt[k] > 0 for k in range(1, gt.shape[0])]
+        else:  # label map (1, D, H, W)
+            masks = [gt[0] == l for l in torch.unique(gt[0]) if l != 0]
+        return [m for m in masks if m.any()]
+
+    def _pick_start(self, vol_shape, box_size, gt) -> Tuple[int, int, int]:
+        """Corner of the box; foreground-aware with probability fg_prob."""
+        masks = self._foreground_masks(gt) if random.random() < self.fg_prob else []
+
+        if masks:
+            mask = random.choice(
+                masks
+            )  # random class first, so rare classes get equal chance
+            coords = torch.nonzero(mask)  # voxels of that class, shape (N, 3)
+            vox = coords[random.randrange(len(coords))].tolist()
+            starts = []
+            for v, size, full in zip(vox, box_size, vol_shape):
+                s = v - random.randint(
+                    0, size - 1
+                )  # voxel lands somewhere inside the box
+                starts.append(
+                    min(max(s, 0), full - size)
+                )  # keep the box inside the volume
+            return tuple(starts)
+
+        # no foreground requested (or none present): uniform random box
+        return tuple(
+            random.randint(0, full - size) for size, full in zip(box_size, vol_shape)
+        )
 
     def _extract_sub_box(
         self, img: torch.Tensor, gt: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Crops a sub-box of shape (D_sub, H_sub, W_sub) from full (1, D_full, H_full, W_full)."""
-        _, D_full, H_full, W_full = img.shape
-        D_sub, H_sub, W_sub = self.sub_box_size  # type: ignore
+        """Box of shape sub_box_size from (C, D, H, W) tensors; pads if the volume is smaller."""
+        _, D, H, W = img.shape
+        d, h, w = self.sub_box_size
 
-        d_start = random.randint(0, max(0, D_full - D_sub))
-        h_start = random.randint(0, max(0, H_full - H_sub))
-        w_start = random.randint(0, max(0, W_full - W_sub))
+        pd, ph, pw = max(0, d - D), max(0, h - H), max(0, w - W)
+        if pd or ph or pw:
+            pad = (0, pw, 0, ph, 0, pd)  # F.pad order: W, H, D
+            valid = F.pad(torch.ones_like(img[:1]), pad, value=0)
+            img = F.pad(img, pad, value=0)
+            gt = F.pad(gt, pad, value=0)
+            if gt.shape[0] > 1:
+                gt[0][valid[0] == 0] = 1  # padded voxels count as background
+            _, D, H, W = img.shape
 
-        img_crop = img[
-            :,
-            d_start : d_start + D_sub,
-            h_start : h_start + H_sub,
-            w_start : w_start + W_sub,
-        ]
-        gt_crop = gt[
-            :,
-            d_start : d_start + D_sub,
-            h_start : h_start + H_sub,
-            w_start : w_start + W_sub,
-        ]
-
-        return img_crop, gt_crop
+        ds, hs, ws = self._pick_start((D, H, W), (d, h, w), gt)
+        return (
+            img[:, ds : ds + d, hs : hs + h, ws : ws + w],
+            gt[:, ds : ds + d, hs : hs + h, ws : ws + w],
+        )
 
     def __getitem__(self, idx: int) -> dict:
         item = self.items[idx]
@@ -235,8 +262,8 @@ class BoxDataset(Dataset):
 
         if self.sub_box_size is not None:
             img, gt = self._extract_sub_box(img, gt)
-            assert img.shape[1:] == self.sub_box_size, (
-                f"Sub-box crop shape {img.shape[1:]} does not match expected {self.sub_box_size}"
+            assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
+                f"Sub-box shape {tuple(img.shape[1:])} does not match expected {self.sub_box_size}"
             )
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
