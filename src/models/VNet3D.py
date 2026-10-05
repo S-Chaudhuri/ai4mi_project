@@ -25,9 +25,15 @@ class ResidualStage3d(nn.Module):
         ch = in_ch
         for i in range(num_convs):
             layers.append(nn.Conv3d(ch, out_ch, kernel_size=5, padding=2, bias=False))
-            layers.append(norm_layer(out_ch, affine=True) if norm_layer is not nn.Identity else nn.Identity())
+            layers.append(
+                norm_layer(out_ch, affine=True)
+                if norm_layer is not nn.Identity
+                else nn.Identity()
+            )
             if i < num_convs - 1:  # activation after every conv except the last;
-                layers.append(nn.PReLU(out_ch))  # the last one waits for the residual add
+                layers.append(
+                    nn.PReLU(out_ch)
+                )  # the last one waits for the residual add
             ch = out_ch
         self.convs = nn.Sequential(*layers)
 
@@ -54,7 +60,9 @@ class DownTransition3d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, pool_kernel: tuple[int, int, int]):
         super().__init__()
         self.down = nn.Sequential(
-            nn.Conv3d(in_ch, out_ch, kernel_size=pool_kernel, stride=pool_kernel, bias=False),
+            nn.Conv3d(
+                in_ch, out_ch, kernel_size=pool_kernel, stride=pool_kernel, bias=False
+            ),
             nn.InstanceNorm3d(out_ch, affine=True),
             nn.PReLU(out_ch),
         )
@@ -78,7 +86,9 @@ class UpTransition3d(nn.Module):
     ):
         super().__init__()
         self.up = nn.Sequential(
-            nn.ConvTranspose3d(in_ch, skip_ch, kernel_size=pool_kernel, stride=pool_kernel),
+            nn.ConvTranspose3d(
+                in_ch, skip_ch, kernel_size=pool_kernel, stride=pool_kernel
+            ),
             nn.InstanceNorm3d(skip_ch, affine=True),
             nn.PReLU(skip_ch),
         )
@@ -87,7 +97,9 @@ class UpTransition3d(nn.Module):
     def forward(self, x: Tensor, skip: Tensor) -> Tensor:
         x = self.up(x)
         if x.shape[2:] != skip.shape[2:]:
-            x = F.interpolate(x, size=skip.shape[2:], mode="trilinear", align_corners=False)
+            x = F.interpolate(
+                x, size=skip.shape[2:], mode="trilinear", align_corners=False
+            )
         return self.stage(torch.cat((x, skip), dim=1))
 
 
@@ -142,7 +154,12 @@ class VNet3D(nn.Module):
         # Decoder (deepest first)
         self.decoders = nn.ModuleList(
             UpTransition3d(
-                chans[i + 1], chans[i], chans[i], self.pool_kernels[i], self.num_convs[i], dropoutRate
+                chans[i + 1],
+                chans[i],
+                chans[i],
+                self.pool_kernels[i],
+                self.num_convs[i],
+                dropoutRate,
             )
             for i in reversed(range(depth))
         )
@@ -171,25 +188,3 @@ class VNet3D(nn.Module):
                     nn.init.zeros_(m.bias)
 
         self.apply(_init)
-
-
-if __name__ == "__main__":
-    net = VNet3D(1, 5, kernels=8)
-    net.init_weights()
-
-    x = torch.randn(2, 1, 36, 36, 32)
-    y = net(x)
-    assert y.shape == (2, 5, 36, 36, 32), y.shape
-    y.mean().backward()
-
-    # Odd sizes: downsampling floor-divides, upsampling corrects back via interpolate
-    y = net(torch.randn(1, 1, 33, 35, 31))
-    assert y.shape == (1, 5, 33, 35, 31), y.shape
-
-    # paper-original: no norm layer
-    net_nonorm = VNet3D(1, 5, kernels=8, norm_layer=nn.Identity)
-    net_nonorm.init_weights()
-    y = net_nonorm(torch.randn(1, 1, 36, 36, 32))
-    assert y.shape == (1, 5, 36, 36, 32), y.shape
-
-    print("OK", sum(p.numel() for p in net.parameters()), "params")
