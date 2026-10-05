@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
 import yaml
+import autoroot
 
 import dataclasses
 from dataclasses import dataclass, field
