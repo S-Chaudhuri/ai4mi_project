@@ -337,11 +337,15 @@ def runTraining(config: Config):
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros(
-        (config.epochs, len(train_loader.dataset), num_classes)  # type: ignore
+        (
+            config.epochs,
+            len(train_loader.dataset) * config.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_loss_val: Tensor = torch.zeros((config.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset), num_classes)  # type: ignore
+        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
     )
 
     best_dice: float = 0
