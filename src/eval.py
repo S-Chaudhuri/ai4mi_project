@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import autoroot  # noqa
 import nibabel as nib
@@ -15,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 from src.train import img_transform_2d
 from src.models.ENet import ENet
 from src.models.ShallowNet import shallowCNN
+from src.utils.config import ModelConfig
 from src.utils.dataset import make_dataset
 from src.utils.utils import probs2class
 
@@ -88,7 +88,7 @@ def run_eval(args: "Args"):
     )
     print(f">> Picked {device} to run experiments")
 
-    num_classes: int = args.model.num_classes
+    num_classes: int = args.num_classes
     kernels: int = args.model.kernels
     factor: int = args.model.factor
 
@@ -112,8 +112,8 @@ def run_eval(args: "Args"):
             pred_logits = net(img)
             # preds.shape = (batch_size, num_classes, W, H)
             pred_probs = F.softmax(
-                args.temperature * pred_logits, dim=1
-            )  # 1 is the temperature parameter
+                args.model.temperature * pred_logits, dim=1
+            )
 
             pred_seg = probs2class(pred_probs)
 
@@ -135,18 +135,12 @@ def run_eval(args: "Args"):
 
 
 @dataclass
-class ModelConfig:
-    name: Literal["ENet", "shallowCNN"] = "ENet"
-    num_classes: int = 5
-    kernels: int = 8
-    factor: int = 2
-
-
-@dataclass
 class Args:
     model: ModelConfig
 
     weights: Path
+
+    num_classes: int = 5
 
     patient_id: int = 0
 
@@ -156,7 +150,6 @@ class Args:
     gpu: bool = True
 
     batch_size: int = 8
-    temperature: float = 1
 
     save_nii: bool = True
     nii_out: Path | None = None

@@ -141,45 +141,57 @@ def get_model(config: Config):
     factor: int = config.model.factor
 
     # NOTE Gonna rewrite this into a BaseModel which can load any subclass from str
-    if config.is_3d:
+    if config.model.is_3d:
         if config.model.name != "UNet3D":
             raise ValueError(
-                f"dims='3d' requires model.name='UNet3D', got {config.model.name!r}"
+                f"is_3d=True requires model.name='UNet3D', got {config.model.name!r}"
             )
         return UNet3D(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+            1,
+            num_classes,
+            kernels=kernels,
+            factor=factor,
+            dropoutRate=config.model.dropout,
         )
     elif config.model.name == "ENet":
         return ENet(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+            1,
+            num_classes,
+            kernels=kernels,
+            factor=factor,
+            dropoutRate=config.model.dropout,
         )
     elif config.model.name == "shallowCNN":
         return shallowCNN(
-            1, num_classes, kernels=kernels, factor=factor, dropoutRate=config.dropout
+            1,
+            num_classes,
+            kernels=kernels,
+            factor=factor,
+            dropoutRate=config.model.dropout,
         )
     else:
-        raise ValueError(f"Unknown model.name {config.model.name!r} for dims='2d'")
+        raise ValueError(f"Unknown model.name {config.model.name!r} for is_3d=False")
 
 
 def build_dataloaders(config: Config):
 
     # Dataset part
-    batch_size = config.batch_size
+    batch_size = config.training.batch_size
     num_classes = config.dataset.num_classes
-    data_root_dir = config.data_path / config.dataset.name
+    data_root_dir = config.paths.data_path / config.dataset.name
 
     dataset_cls: type[Dataset]
     val_dataset_cls: type[Dataset]  # NEW: validation can use another class
     dataset_kwargs: dict[str, Any] = {}
     train_kwargs: dict[str, Any] = {}  # NEW: only for the training set
     val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
-    if config.is_3d:
+    if config.model.is_3d:
         dataset_cls = BoxDataset
         val_dataset_cls = BoxDataset  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
-        train_kwargs["fg_prob"] = config.fg_prob  # NEW
+        train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
         # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
         dataset_cls = SliceDataset
@@ -192,19 +204,19 @@ def build_dataloaders(config: Config):
         data_root_dir,
         img_transform=img_transform,
         gt_transform=gt_transform,
-        debug=config.debug,
+        debug=config.runtime.debug,
         **dataset_kwargs,
         **train_kwargs,  # NEW
     )
 
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
     train_loader_kwargs: dict[str, Any]
-    if config.is_3d:
+    if config.model.is_3d:
         train_loader_kwargs = {
             "sampler": RandomSampler(
                 train_set,
                 replacement=True,
-                num_samples=config.batches_per_epoch * batch_size,
+                num_samples=config.training.batches_per_epoch * batch_size,
             )
         }
     else:
@@ -213,9 +225,9 @@ def build_dataloaders(config: Config):
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size,
-        num_workers=config.num_workers,
+        num_workers=config.runtime.num_workers,
         pin_memory=True,
-        persistent_workers=config.num_workers > 0,
+        persistent_workers=config.runtime.num_workers > 0,
         **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
@@ -224,16 +236,16 @@ def build_dataloaders(config: Config):
         data_root_dir,
         img_transform=img_transform,
         gt_transform=gt_transform,
-        debug=config.debug,
+        debug=config.runtime.debug,
         **dataset_kwargs,
         **val_kwargs,  # NEW
     )
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
-        num_workers=config.num_workers,
+        num_workers=config.runtime.num_workers,
         pin_memory=True,
-        persistent_workers=config.num_workers > 0,
+        persistent_workers=config.runtime.num_workers > 0,
         shuffle=False,
     )
 
@@ -247,9 +259,9 @@ def build_dataloaders(config: Config):
 
 def setup(
     config: Config,
-) -> tuple[nn.Module, Any, LRScheduler, Any, DataLoader, DataLoader]:
+) -> tuple[nn.Module, Any, LRScheduler | None, Any, DataLoader, DataLoader]:
     # Networks and scheduler
-    device = torch.device("cuda") if config.gpu else torch.device("cpu")
+    device = torch.device("cuda") if config.training.gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
     net = get_model(config)
@@ -257,14 +269,21 @@ def setup(
     net.init_weights()
     net.to(device)
 
-    lr = config.lr
     optimizer = torch.optim.AdamW(
-        net.parameters(), lr=lr, weight_decay=config.weight_decay, betas=config.betas
+        net.parameters(),
+        lr=config.training.lr,
+        weight_decay=config.training.weight_decay,
+        betas=config.training.betas,
     )
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=config.epochs
-    )
+    if config.training.scheduler == "cosine":
+        scheduler: LRScheduler | None = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=config.training.epochs
+        )
+    elif config.training.scheduler == "none":
+        scheduler = None
+    else:
+        raise ValueError(f"Unknown scheduler {config.training.scheduler!r}")
 
     train_loader, val_loader = build_dataloaders(config)
 
@@ -272,29 +291,29 @@ def setup(
 
 
 def get_loss_func(config: Config):
-    if config.mode == "full":
+    if config.training.mode == "full":
         idk = list(
             range(config.dataset.num_classes)
         )  # Supervise both background and foreground
-    elif config.mode == "partial" and config.dataset.name == "SEGTHOR":
+    elif config.training.mode == "partial" and config.dataset.name == "SEGTHOR":
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
-        raise ValueError(config.mode, config.dataset.name)
+        raise ValueError(config.training.mode, config.dataset.name)
 
-    if config.is_3d:
+    if config.model.is_3d:
         ce_cls, ce_dice_cls = CrossEntropy, CrossEntropyPlusDice
     else:
         ce_cls, ce_dice_cls = CrossEntropy2D, CrossEntropyPlusDice2D
 
-    if config.loss == "ce":
+    if config.training.loss == "ce":
         return ce_cls(idk=idk)
-    elif config.loss == "dice_ce":
+    elif config.training.loss == "dice_ce":
         dice_idk = [c for c in idk if c != 0]
         return ce_dice_cls(
-            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.dice_weight
+            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.training.dice_weight
         )
     else:
-        raise ValueError(config.loss)
+        raise ValueError(config.training.loss)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +335,7 @@ def save_predictions(
 
 def create_profiler(config: Config, out_dir: Path):
     activities = [torch.profiler.ProfilerActivity.CPU]
-    if config.gpu:
+    if config.training.gpu:
         activities.append(torch.profiler.ProfilerActivity.CUDA)
 
     def on_trace_ready(prof: torch.profiler.profile):
@@ -342,19 +361,20 @@ def create_profiler(config: Config, out_dir: Path):
 
 def runTraining(config: Config):
     print(
-        f">>> Setting up to train on {config.dataset.name} ({'3D' if config.is_3d else '2D'}) with {config.mode}"
+        f">>> Setting up to train on {config.dataset.name} "
+        f"({'3D' if config.model.is_3d else '2D'}) with {config.training.mode}"
     )
 
     net, optimizer, scheduler, device, train_loader, val_loader = setup(config)
 
     num_classes = config.dataset.num_classes
-    data_spacing = (1, 1, 1) if config.is_3d else (1, 1)
+    data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
 
-    result_dir = config.dest or Path(
+    result_dir = config.paths.dest or Path(
         f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
     )
     result_dir.mkdir(parents=True, exist_ok=True)
-    device_type = "cuda" if config.gpu else "cpu"
+    device_type = "cuda" if config.training.gpu else "cpu"
 
     profiler: torch.profiler.profile | None = None
     if config.profiler.enabled:
@@ -366,47 +386,47 @@ def runTraining(config: Config):
 
     # Adds histogram of the gradients and parameters
     # NOTE Does add a lot of info to our project, need to see if we want that
-    if config.wandb_watch:
+    if config.wandb.watch:
         wandb.watch(net, log="all", log_freq=100)
 
     loss_fn = get_loss_func(config)
-    scaler = torch.amp.GradScaler(device_type, enabled=config.gpu)
+    scaler = torch.amp.GradScaler(device_type, enabled=config.training.gpu)
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
-    log_loss_tra: Tensor = torch.zeros((config.epochs, len(train_loader)))
+    log_loss_tra: Tensor = torch.zeros((config.training.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros(
         (
-            config.epochs,
-            len(train_loader.dataset) * config.batches_per_epoch,
+            config.training.epochs,
+            len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         )  # type: ignore
     )
-    log_loss_val: Tensor = torch.zeros((config.epochs, len(val_loader)))
+    log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
+        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
         (
-            config.epochs,
-            len(train_loader.dataset) * config.batches_per_epoch,
+            config.training.epochs,
+            len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         )  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
-        (config.epochs, len(val_loader.dataset) * config.batches_per_epoch, num_classes)  # type: ignore
+        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
         (
-            config.epochs,
-            len(train_loader.dataset) * config.batches_per_epoch,
+            config.training.epochs,
+            len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
         dtype=torch.bool,
     )
     log_present_val: Tensor = torch.zeros(
         (
-            config.epochs,
-            len(val_loader.dataset) * config.batches_per_epoch,
+            config.training.epochs,
+            len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
         dtype=torch.bool,
@@ -416,7 +436,7 @@ def runTraining(config: Config):
 
     # NOTE Just need a total rewrite of this, split it up into functions
     # Also not handy bc train and val are in this same loop
-    for e in range(config.epochs):
+    for e in range(config.training.epochs):
         for m in ["train", "val"]:
             match m:
                 case "train":
@@ -461,8 +481,8 @@ def runTraining(config: Config):
                     with torch.autocast(device_type=device_type):
                         pred_logits = net(img)
                         pred_probs = F.softmax(
-                            config.temperature * pred_logits.float(), dim=1
-                        )  # 1 is the temperature parameter
+                            config.model.temperature * pred_logits.float(), dim=1
+                        )
 
                         # Metrics computation, not used for training
                         pred_seg = probs2one_hot(pred_probs)
@@ -499,7 +519,7 @@ def runTraining(config: Config):
                                 predicted_class,
                                 data["stems"],
                                 result_dir / f"iter{e:03d}" / m,
-                                config.is_3d,
+                                config.model.is_3d,
                                 mult,
                             )
 
@@ -558,7 +578,8 @@ def runTraining(config: Config):
         wandb.log(metrics)
 
         # Scheduler at the end of each epoch
-        scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
 
         # np.save(result_dir / "loss_tra.npy", log_loss_tra)
         # np.save(result_dir / "dice_tra.npy", log_dice_tra)
@@ -589,15 +610,16 @@ def main():
     config = get_config()
 
     # Seed everything right at the beginning
-    seed_all(config.seed, config.gpu)
+    seed_all(config.training.seed, config.training.gpu)
 
     # Setup wandb
     wandb.init(
-        entity="ai-for-medical-imaging",
-        project=f"{config.dataset.name}-{'3D' if config.is_3d else '2D'}",
+        entity=config.wandb.entity,
+        project=config.wandb.project
+        or f"{config.dataset.name}-{'3D' if config.model.is_3d else '2D'}",
         config=dataclasses.asdict(config),
-        dir=autoroot.root / "results" / "wandb",
-        notes=config.notes,
+        dir=config.wandb.dir or (autoroot.root / "results" / "wandb"),
+        notes=config.wandb.notes,
     )
 
     pprint(dataclasses.asdict(config))
