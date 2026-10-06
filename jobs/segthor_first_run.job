@@ -6,6 +6,6 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=jobs/logs/%j/out.log
 
-uv run /home/scur0088/project/src/main.py --epochs 50 --dataset.name SEGTHOR --seed 42 
-uv run /home/scur0088/project/src/main.py --epochs 50 --dataset.name SEGTHOR --seed 44 
-uv run /home/scur0088/project/src/main.py --epochs 50 --dataset.name SEGTHOR --seed 46 
+uv run /home/scur0088/project/src/train.py --training.epochs 50 --dataset.name SEGTHOR --training.seed 42
+uv run /home/scur0088/project/src/train.py --training.epochs 50 --dataset.name SEGTHOR --training.seed 44
+uv run /home/scur0088/project/src/train.py --training.epochs 50 --dataset.name SEGTHOR --training.seed 46 

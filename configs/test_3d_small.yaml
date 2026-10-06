@@ -1,4 +1,3 @@
-batch_size: 2
 dataset:
   name: SEGTHOR_small
   num_classes: 5
@@ -8,14 +7,17 @@ dataset:
     - 64
   retains: 2
   fold: 0
-is_3d: true
 model:
   name: UNet3D
+  is_3d: true
   kernels: 8
   factor: 2
-epochs: 1
-loss: ce
-mode: full
-gpu: true
-num_workers: 4
-seed: 42
+training:
+  epochs: 1
+  batch_size: 2
+  gpu: true
+  seed: 42
+  loss: ce
+  mode: full
+runtime:
+  num_workers: 4

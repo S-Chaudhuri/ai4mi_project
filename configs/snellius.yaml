@@ -1,1 +1,2 @@
-data_dir: /scratch-shared/scur0088/data
+paths:
+  data_path: /scratch-shared/scur0088/data
