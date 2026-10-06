@@ -94,7 +94,7 @@ def gt_transform_2d(K, img):
 
 def img_transform_3d(vol: np.ndarray) -> Tensor:
     """
-    Input:  vol is a 3D numpy array from stacked PNGs with shape (D, H, W)
+    Input:  vol is a uint8 3D numpy array (box or volume) with shape (D, H, W)
     Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
     """
     vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
@@ -106,18 +106,12 @@ def img_transform_3d(vol: np.ndarray) -> Tensor:
 
 def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
     """
-    Input:  vol is a 3D numpy array from stacked PNG masks (D, H, W)
-            containing class indices stored as multiples of 255/(K-1)
-            (e.g. {0, 63, 126, 189, 252} for K=5)
-    Output: 4D float Tensor (K, D, H, W) one-hot encoded
+    Input:  vol is a 3D numpy array (D, H, W) of class indices {0, ..., K-1}.
+            The dataset decodes the 255-quantized PNG values once per volume,
+            so here we only one-hot the (already cropped) box.
+    Output: 4D int32 Tensor (K, D, H, W) one-hot encoded
     """
-    vol = np.array(vol, dtype=np.float32)
-
-    # Convert stored intensities -> class indices {0, ..., K-1}, for any K
-    vol = np.round(vol / (255.0 / (K - 1))).astype(np.int64)
-
-    # Add channel dimension: (1, D, H, W)
-    vol_tensor = torch.from_numpy(vol)[None, ...]
+    vol_tensor = torch.from_numpy(vol.astype(np.int64))[None, ...]
 
     # Return one-hot encoded tensor: (K, D, H, W)
     return class2one_hot(vol_tensor, K=K)[0]
@@ -191,6 +185,7 @@ def build_dataloaders(config: Config):
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
+        dataset_kwargs["num_classes"] = num_classes  # BoxDataset decodes the quantized GT once per volume
         train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
         # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
@@ -390,7 +385,18 @@ def runTraining(config: Config):
         wandb.watch(net, log="all", log_freq=100)
 
     loss_fn = get_loss_func(config)
-    scaler = torch.amp.GradScaler(device_type, enabled=config.training.gpu)
+
+    # bf16 needs no GradScaler (no fp16 range issues); fp16 keeps the old
+    # scaler-based behavior.
+    amp_dtype = torch.bfloat16
+    if config.training.gpu:
+        amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[
+            config.runtime.amp_dtype
+        ]
+    scaler = torch.amp.GradScaler(
+        device_type,
+        enabled=config.training.gpu and config.runtime.amp_dtype == "fp16",
+    )
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((config.training.epochs, len(train_loader)))
@@ -468,8 +474,10 @@ def runTraining(config: Config):
                 j = 0
                 tq_iter = tqdm_(enumerate(loader), total=len(loader), desc=desc)
                 for i, data in tq_iter:
-                    img = data["images"].to(device)
-                    gt = data["gts"].to(device)
+                    # non_blocking=True: the DataLoader uses pin_memory, so this
+                    # is an async H2D DMA copy instead of a blocking one.
+                    img = data["images"].to(device, non_blocking=True)
+                    gt = data["gts"].to(device, non_blocking=True)
 
                     if opt is not None:  # So only for training
                         opt.zero_grad()
@@ -478,7 +486,12 @@ def runTraining(config: Config):
                     assert 0 <= img.min() and img.max() <= 1
                     batch_size = img.shape[0]  # works for (B,C,W,H) and (B,C,D,W,H)
 
-                    with torch.autocast(device_type=device_type):
+                    # HD95 is a scipy (erosion + cKDTree) loop per sample and
+                    # class: seconds per batch. Only run it on validation
+                    # unless explicitly enabled for training.
+                    compute_hd95 = m == "val" or config.runtime.hd95_in_train
+
+                    with torch.autocast(device_type=device_type, dtype=amp_dtype):
                         pred_logits = net(img)
                         pred_probs = F.softmax(
                             config.model.temperature * pred_logits.float(), dim=1
@@ -489,9 +502,10 @@ def runTraining(config: Config):
                         log_dice[e, j : j + batch_size, :] = dice_coef(
                             pred_seg, gt
                         )  # One DSC value per sample and per class
-                        log_hd95[e, j : j + batch_size, :] = hd95_coef(
-                            pred_seg, gt, spacing_mm=data_spacing
-                        )
+                        if compute_hd95:
+                            log_hd95[e, j : j + batch_size, :] = hd95_coef(
+                                pred_seg, gt, spacing_mm=data_spacing
+                            )
                         log_present[e, j : j + batch_size, :] = (
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
@@ -533,9 +547,10 @@ def runTraining(config: Config):
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
                         "GDice": f"{masked_mean(log_dice[e, :j, 1:], present):05.3f}",
-                        "HD95": f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
+                    if compute_hd95:
+                        postfix_dict["HD95"] = f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}"
                     if num_classes > 2:
                         postfix_dict |= {
                             f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
@@ -550,9 +565,6 @@ def runTraining(config: Config):
             "train/gated_dice": masked_mean(
                 log_dice_tra[e, :, 1:], log_present_tra[e, :, 1:]
             ).item(),
-            "train/hd95": masked_mean(
-                log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
-            ).item(),
             # "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
             "val/dice": log_dice_val[e, :, 1:].mean().item(),
@@ -564,14 +576,19 @@ def runTraining(config: Config):
             ).item(),
             # "val/acc": acc_val,
         }
+        if config.runtime.hd95_in_train:
+            metrics["train/hd95"] = masked_mean(
+                log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
+            ).item()
 
         if num_classes > 2:
             for k in range(1, num_classes):
                 metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
                 metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
-                metrics[f"train/hd95_{k}"] = masked_mean(
-                    log_hd95_tra[e, :, k], log_present_tra[e, :, k]
-                ).item()
+                if config.runtime.hd95_in_train:
+                    metrics[f"train/hd95_{k}"] = masked_mean(
+                        log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+                    ).item()
                 metrics[f"val/hd95_{k}"] = masked_mean(
                     log_hd95_val[e, :, k], log_present_val[e, :, k]
                 ).item()
@@ -610,7 +627,7 @@ def main():
     config = get_config()
 
     # Seed everything right at the beginning
-    seed_all(config.training.seed, config.training.gpu)
+    seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
 
     # Setup wandb
     wandb.init(

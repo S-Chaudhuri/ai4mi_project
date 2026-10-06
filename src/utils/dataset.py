@@ -164,6 +164,7 @@ class BoxDataset(Dataset):
         img_transform=None,
         gt_transform=None,
         sub_box_size: Optional[Tuple[int, int, int]] = None,
+        num_classes: int = 5,
         fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
     ):
@@ -172,6 +173,7 @@ class BoxDataset(Dataset):
         self.img_transform = img_transform
         self.gt_transform = gt_transform
         self.sub_box_size = sub_box_size
+        self.num_classes = num_classes
         self.fg_prob = fg_prob
         self.debug = debug
 
@@ -179,17 +181,30 @@ class BoxDataset(Dataset):
         if self.debug:
             self.items = self.items[:10]
 
-        # Load every patient volume into RAM once; __getitem__ never touches disk.
+        # Load every patient volume into RAM once; __getitem__ never touches
+        # disk. The 255-quantized GT is decoded to class indices (int8) here
+        # once per volume, and the foreground voxel coordinates of every class
+        # are precomputed for fast foreground-aware box sampling. __getitem__
+        # then only ever converts the small box.
         for item in self.items:
             item["img_vol"] = load_volume(item["images"])
-            item["gt_vol"] = load_volume(item["gts"])
+            gt_vol = load_volume(item["gts"])
+            gt_cls = np.round(
+                gt_vol.astype(np.float32) / (255.0 / (num_classes - 1))
+            ).astype(np.int8)
+            item["gt_cls"] = gt_cls
+            item["fg_coords"] = [
+                np.argwhere(gt_cls == k) for k in range(1, num_classes)
+            ]
             del item["images"], item["gts"]
 
         n_vox = sum(v["img_vol"].size for v in self.items)
         print(
             f">> Created {subset} dataset with {len(self.items)} 3D patient volumes."
         )
-        print(f"   Loaded all slices into RAM: {n_vox * 2 / 1e6:.0f} MB (img+gt, uint8).")
+        print(
+            f"   Loaded all slices into RAM: {n_vox * 2 / 1e6:.0f} MB (img uint8 + gt)."
+        )
         if self.sub_box_size:
             print(
                 f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}"
@@ -198,47 +213,34 @@ class BoxDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def _foreground_masks(self, gt: torch.Tensor) -> List[torch.Tensor]:
-        """Boolean (D, H, W) mask for each foreground class present in this volume."""
-        if gt.shape[0] > 1:  # one-hot: channel 0 = background
-            masks = [gt[k] > 0 for k in range(1, gt.shape[0])]
-        else:  # label map (1, D, H, W)
-            masks = [gt[0] == l for l in torch.unique(gt[0]) if l != 0]
-        return [m for m in masks if m.any()]
-
-    def _pick_start(self, vol_shape, box_size, gt) -> Tuple[int, int, int]:
+    def _pick_start(self, item: Dict[str, Any], vol_shape) -> Tuple[int, int, int]:
         """Corner of the box; foreground-aware with probability fg_prob."""
-        masks = self._foreground_masks(gt) if random.random() < self.fg_prob else []
+        d, h, w = self.sub_box_size
 
-        if masks:
-            mask = random.choice(
-                masks
-            )  # random class first, so rare classes get equal chance
-            coords = torch.nonzero(mask)  # voxels of that class, shape (N, 3)
-            vox = coords[random.randrange(len(coords))].tolist()
-            starts = []
-            for v, size, full in zip(vox, box_size, vol_shape):
-                s = v - random.randint(
-                    0, size - 1
-                )  # voxel lands somewhere inside the box
-                starts.append(
-                    min(max(s, 0), full - size)
-                )  # keep the box inside the volume
-            return tuple(starts)
+        if item["fg_coords"] and random.random() < self.fg_prob:
+            nonempty = [c for c in item["fg_coords"] if len(c) > 0]
+            if nonempty:
+                # random class first, so rare classes get equal chance
+                coords = random.choice(nonempty)  # voxels of that class, (N, 3)
+                vox = coords[random.randrange(len(coords))]
+                starts = []
+                for v, size, full in zip(vox, (d, h, w), vol_shape):
+                    s = int(v) - random.randint(0, size - 1)
+                    starts.append(
+                        min(max(s, 0), full - size)
+                    )  # keep the box inside the volume
+                return tuple(starts)
 
         # no foreground requested (or none present): uniform random box
         return tuple(
-            random.randint(0, full - size) for size, full in zip(box_size, vol_shape)
+            random.randint(0, max(0, full - size))
+            for size, full in zip((d, h, w), vol_shape)
         )
 
-    def _extract_sub_box(
-        self, img: torch.Tensor, gt: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Box of shape sub_box_size from (C, D, H, W) tensors; pads if the volume is smaller."""
-        _, D, H, W = img.shape
+    def _pad_to_box(self, img: Tensor, gt: Tensor) -> Tuple[Tensor, Tensor]:
+        """Pad at the end if the volume is smaller than the box on some axis."""
         d, h, w = self.sub_box_size
-
-        pd, ph, pw = max(0, d - D), max(0, h - H), max(0, w - W)
+        pd, ph, pw = d - img.shape[1], h - img.shape[2], w - img.shape[3]
         if pd or ph or pw:
             pad = (0, pw, 0, ph, 0, pd)  # F.pad order: W, H, D
             valid = F.pad(torch.ones_like(img[:1]), pad, value=0)
@@ -246,36 +248,51 @@ class BoxDataset(Dataset):
             gt = F.pad(gt, pad, value=0)
             if gt.shape[0] > 1:
                 gt[0][valid[0] == 0] = 1  # padded voxels count as background
-            _, D, H, W = img.shape
-
-        ds, hs, ws = self._pick_start((D, H, W), (d, h, w), gt)
-        return (
-            img[:, ds : ds + d, hs : hs + h, ws : ws + w],
-            gt[:, ds : ds + d, hs : hs + h, ws : ws + w],
-        )
+        return img, gt
 
     def __getitem__(self, idx: int) -> dict:
         item = self.items[idx]
 
-        img_np = item["img_vol"]
-        gt_np = item["gt_vol"]
+        if self.sub_box_size is None:  # no sub-boxing: return the full volumes
+            img = (
+                self.img_transform(item["img_vol"])
+                if self.img_transform
+                else torch.from_numpy(item["img_vol"])
+            )
+            gt = (
+                self.gt_transform(item["gt_cls"])
+                if self.gt_transform
+                else torch.from_numpy(item["gt_cls"].astype(np.int64, copy=False))
+            )
+            return {"images": img, "gts": gt, "stems": item["stem"]}
+
+        d, h, w = self.sub_box_size
+        vol_shape = item["img_vol"].shape
+
+        ds, hs, ws = self._pick_start(item, vol_shape)
+
+        # Crop the small box out of the in-RAM volumes first (cheap uint8/int8
+        # views), and only then run the transforms on the box, not the volume.
+        img_box = item["img_vol"][ds : ds + d, hs : hs + h, ws : ws + w]
+        gt_box = item["gt_cls"][ds : ds + d, hs : hs + h, ws : ws + w]
 
         img = (
-            self.img_transform(img_np)
+            self.img_transform(img_box)
             if self.img_transform
-            else torch.from_numpy(img_np)
+            else torch.from_numpy(np.ascontiguousarray(img_box))
         )
-        gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
-
-        assert img.shape[1:] == gt.shape[1:], (
-            f"Full volume shape mismatch: img {img.shape[1:]} vs gt {gt.shape[1:]}"
+        gt = (
+            self.gt_transform(gt_box)
+            if self.gt_transform
+            else torch.from_numpy(gt_box.astype(np.int64, copy=False))
         )
 
-        if self.sub_box_size is not None:
-            img, gt = self._extract_sub_box(img, gt)
-            assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
-                f"Sub-box shape {tuple(img.shape[1:])} does not match expected {self.sub_box_size}"
-            )
+        if img.shape[1:] != (d, h, w):
+            img, gt = self._pad_to_box(img, gt)
+
+        assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
+            f"Sub-box shape {tuple(img.shape[1:])} does not match expected {tuple(self.sub_box_size)}"
+        )
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
 
@@ -300,6 +317,7 @@ class GridBoxDataset(BoxDataset):
         img_transform=None,
         gt_transform=None,
         sub_box_size: Tuple[int, int, int] = (128, 128, 128),
+        num_classes: int = 5,
         overlap: float = 0.5,  # 0.5 = each box overlaps its neighbour by half
         debug: bool = False,
     ):
@@ -309,6 +327,7 @@ class GridBoxDataset(BoxDataset):
             img_transform,
             gt_transform,
             sub_box_size=sub_box_size,
+            num_classes=num_classes,
             fg_prob=0.0,
             debug=debug,
         )
@@ -340,14 +359,18 @@ class GridBoxDataset(BoxDataset):
 
         # Crop the box from the in-RAM volumes (copy so it is contiguous)
         img_np = item["img_vol"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
-        gt_np = item["gt_vol"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
+        gt_np = item["gt_cls"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
 
         img = (
             self.img_transform(img_np)
             if self.img_transform
             else torch.from_numpy(img_np)
         )
-        gt = self.gt_transform(gt_np) if self.gt_transform else torch.from_numpy(gt_np)
+        gt = (
+            self.gt_transform(gt_np)
+            if self.gt_transform
+            else torch.from_numpy(gt_np.astype(np.int64, copy=False))
+        )
 
         # Pad at the end if the volume is smaller than the box on some axis
         _, D, H, W = img.shape

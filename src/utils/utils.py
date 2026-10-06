@@ -55,12 +55,12 @@ A = TypeVar("A")
 B = TypeVar("B")
 
 
-def seed_all(seed: int, gpu: bool = False):
+def seed_all(seed: int, gpu: bool = False, cudnn_benchmark: bool = False):
     torch.manual_seed(seed)
     if gpu:
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = not cudnn_benchmark
+    torch.backends.cudnn.benchmark = cudnn_benchmark
 
     random.seed(seed)
     np.random.seed(seed)
@@ -113,7 +113,9 @@ def probs2class(probs: Tensor) -> Tensor:
     b, _, *img_shape = probs.shape
     assert simplex(probs)
 
-    res = probs.argmax(dim=1)
+    # max(dim=1).indices instead of argmax: same result, but argmax on high-dim
+    # tensors hits a very slow kernel path on CPU (seconds vs milliseconds).
+    res = probs.max(dim=1).indices
     assert res.shape == (b, *img_shape)
 
     return res
@@ -285,8 +287,17 @@ def meta_hausdorff(
     label_np = label.detach().cpu().numpy().astype(bool)
     pred_np = pred.detach().cpu().numpy().astype(bool)
 
+    present = label_np.any(axis=tuple(range(2, label_np.ndim)))  # (b, k)
+
     for i in range(b):
-        for j in range(k):
+        # j=0 is background: never reported, and its "surface" (the box
+        # boundary) is the most expensive pair to measure.
+        for j in range(1, k):
+            # Class absent from the gt: keep 0.0. Every reported HD95 mean is
+            # masked by gt-presence, so these pairs never affect a reported
+            # value, and skipping avoids the worst-case-distance work.
+            if not present[i, j]:
+                continue
             res[i, j] = hausdorff_distance(
                 label_np[i, j], pred_np[i, j], spacing_mm, percentile
             )
