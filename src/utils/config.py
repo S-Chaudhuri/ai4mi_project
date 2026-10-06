@@ -170,6 +170,9 @@ class WandbConfig:
     # Log gradient and parameter histograms via wandb.watch.
     watch: bool = False
 
+    # Store the checksum of the dataset
+    store_artifect: bool = True
+
     # Free-form notes attached to the wandb run.
     notes: Optional[str] = None
 

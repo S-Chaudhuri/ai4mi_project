@@ -6,5 +6,13 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=logs/%j/out.log
 
-uv run python -O /home/scur0088/project/src/train.py --paths.data_path /scratch-shared/scur0088/data --training.epochs 30 --dataset.name SEGTHOR --model.is_3d --model.name UNet3D
-
+# Full 30-epoch 3D SEGTHOR run (bf16 default, HD95 on validation only).
+# Submit from the project root: sbatch jobs/3d.job
+uv run python -O /home/scur0088/project/src/train.py \
+    --config /home/scur0088/project/configs/snellius.yaml \
+    --paths.dest results/segthor_3d_%j \
+    --training.epochs 30 \
+    --dataset.name SEGTHOR \
+    --model.is_3d \
+    --model.name UNet3D \
+    --runtime.num_workers 8

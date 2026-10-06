@@ -185,7 +185,9 @@ def build_dataloaders(config: Config):
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
-        dataset_kwargs["num_classes"] = num_classes  # BoxDataset decodes the quantized GT once per volume
+        dataset_kwargs["num_classes"] = (
+            num_classes  # BoxDataset decodes the quantized GT once per volume
+        )
         train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
         # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
@@ -244,10 +246,11 @@ def build_dataloaders(config: Config):
         shuffle=False,
     )
 
-    # Store the checksum of the dataset
-    artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
-    artifect.add_reference(f"file://{data_root_dir}")
-    wandb.log_artifact(artifect)
+    if config.wandb.store_artifect:
+        # Store the checksum of the dataset
+        artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
+        artifect.add_reference(f"file://{data_root_dir}")
+        wandb.log_artifact(artifect)
 
     return train_loader, val_loader
 
@@ -409,7 +412,11 @@ def runTraining(config: Config):
     )
     log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
+        (
+            config.training.epochs,
+            len(val_loader.dataset) * config.training.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
         (
@@ -419,7 +426,11 @@ def runTraining(config: Config):
         )  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
+        (
+            config.training.epochs,
+            len(val_loader.dataset) * config.training.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
         (
@@ -550,7 +561,9 @@ def runTraining(config: Config):
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
                     if compute_hd95:
-                        postfix_dict["HD95"] = f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}"
+                        postfix_dict["HD95"] = (
+                            f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}"
+                        )
                     if num_classes > 2:
                         postfix_dict |= {
                             f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
