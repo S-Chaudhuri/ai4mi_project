@@ -9,4 +9,4 @@
 # Ensure that uv is in path
 export PATH="$HOME/.local/bin:$PATH"
 
-uv run python main.py --dest result/run_%j/
+uv run python src/train.py --paths.dest result/run_%j/
