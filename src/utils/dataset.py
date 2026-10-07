@@ -416,19 +416,25 @@ class CoarseDataset(BoxDataset):
             debug=debug,
         )
         self.target_size = target_size
-        
-        # Pre-compute the coarse versions of the volumes once here in __init__
+
+        # Pre-compute the coarse versions
         for item in self.items:
             # (1, 1, D, H, W) for F.interpolate
             img_t = torch.from_numpy(item["img_vol"]).unsqueeze(0).unsqueeze(0).float()
             gt_t = torch.from_numpy(item["gt_cls"]).unsqueeze(0).unsqueeze(0).float()
-            
-            img_coarse = F.interpolate(img_t, size=self.target_size, mode="trilinear", align_corners=False)
+
+            img_coarse = F.interpolate(
+                img_t, size=self.target_size, mode="trilinear", align_corners=False
+            )
             gt_coarse = F.interpolate(gt_t, size=self.target_size, mode="nearest")
-            
-            # Replace the high-res volumes with coarse versions in RAM (maintaining the original dtype)
-            item["img_vol"] = img_coarse.squeeze(0).squeeze(0).numpy().astype(item["img_vol"].dtype)
-            item["gt_cls"] = gt_coarse.squeeze(0).squeeze(0).numpy().astype(item["gt_cls"].dtype)
+
+            # Squeeze twice to get back proper dimensions
+            item["img_vol"] = (
+                img_coarse.squeeze(0).squeeze(0).numpy().astype(item["img_vol"].dtype)
+            )
+            item["gt_cls"] = (
+                gt_coarse.squeeze(0).squeeze(0).numpy().astype(item["gt_cls"].dtype)
+            )
 
         print(f"   Target coarse size: {self.target_size} (pre-computed in memory)")
 
