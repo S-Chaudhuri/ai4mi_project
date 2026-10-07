@@ -15,36 +15,40 @@ so the labels take only one nearest-neighbour pass.
 The cheap per-sample transforms (noise, gamma, brightness, contrast) will be 
 done online.
 
+Both image and labels are read from the sliced dataset, so the train/val split
+that slice_segthor.py decided is respected: only the subset asked for is
+augmented, and a validation patient can never leak into training.
+
 Usage:
-    # two augmented variants of Patient_07, plus the un-augmented v6 reference
-    uv run python src/preprocessing/augment_offline.py --variants 2
+    # two variants of every patient in data/SEGTHOR/train
+    uv run python src/preprocessing/augment_offline.py
+
+    # one patient only, with preview figures to check it by eye
+    uv run python src/preprocessing/augment_offline.py \
+        --patient Patient_07 --preview 4
 
     # pure in-plane extruded warp (identical deformation at every depth)
     uv run python src/preprocessing/augment_offline.py \
         --elastic-alpha 0 12 12 --elastic-sigma inf 16 16
 
 Output (default):
-    data/SEGTHOR_aug/train/img/Patient_07v6_0000.png   un-augmented v6 labels
-    data/SEGTHOR_aug/train/img/Patient_07a1_0000.png   variant 1
+    data/SEGTHOR_aug/train/img/Patient_01a1_0000.png   variant 1 of Patient_01
+    data/SEGTHOR_aug/train/img/Patient_01a2_0000.png   variant 2
     data/SEGTHOR_aug/train/gt/...                      same stems, class * 63
 """
 
-import gzip
 import math
-import zipfile
+import zlib
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
 import autoroot  # noqa     Do not remove, puts the project root on sys.path
-import nibabel as nib
 import numpy as np
 import torch
 import torch.nn.functional as F
 import tyro
 from PIL import Image
 from scipy.ndimage import gaussian_filter
-from skimage.transform import resize
 
 from src.utils.dataset import load_volume
 
@@ -54,32 +58,28 @@ GT_SCALE = 63
 CLASS_NAMES: tuple[str, ...] = ("esophagus", "heart", "trachea", "aorta")
 CLASS_COLORS: tuple[str, ...] = ("gold", "crimson", "deepskyblue", "limegreen")
 
-# Same call as slice_segthor.py uses, so our GT lands on the identical grid
-resize_ = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
-
 
 @dataclass
 class Args:
-    patient: str = "Patient_07"
-    """Patient to augment, as named in the sliced dataset."""
+    patient: str = ""
+    """One patient to augment, e.g. Patient_07. Empty means every patient in
+    the subset."""
 
     subset: str = "train"
-    """Which split the patient lives in (train / val)."""
+    """Which split to augment. Augmenting val would leak it into training."""
 
     sliced_root: Path = autoroot.root / "data" / "SEGTHOR"
-    """Sliced dataset, read for the CT image PNGs."""
-
-    gt_v6: Path = autoroot.root / "Patient_labels_GTv6.zip"
-    """The 4-label ground truths. Either the .zip or an extracted directory."""
+    """Sliced dataset, read for both the image and the label PNGs."""
 
     out_root: Path = autoroot.root / "data" / "SEGTHOR_aug"
     """Where the pseudo-patients are written. Left separate from data/SEGTHOR."""
 
     variants: int = 2
-    """Number of augmented copies to generate."""
+    """Number of augmented copies to generate per patient."""
 
-    write_original: bool = True
-    """Also write the un-augmented patient with v6 labels, as a reference."""
+    write_original: bool = False
+    """Also copy each patient through un-augmented. Off: the originals are
+    already in sliced_root, so this would only duplicate them."""
 
     seed: int = 0
     """Variant i uses seed + i, so any copy can be reproduced from its name."""
@@ -101,23 +101,46 @@ class Args:
     """In-plane skew, in degrees."""
 
     # --- elastic, per-axis (z, y, x) ---------------------------------------
-    elastic_alpha: tuple[float, float, float] = (4.0, 12.0, 12.0)
+    # These defaults were picked by sweeping alpha/sigma over 15 patients x 2
+    # seeds and counting folds: (12,16) folded 3 times in 30, (8,16) none but
+    # with a worst Jacobian of 0.09, (6,20) none with 0.40 to spare.
+    elastic_alpha: tuple[float, float, float] = (2.0, 6.0, 6.0)
     """Max displacement in voxels per axis. Set the z entry to 0 for a purely
-    in-plane deformation."""
+    in-plane deformation. Raising this without raising sigma is what makes the
+    deformation fold -- it is the in-plane alpha/sigma ratio that matters, and
+    0.3 is comfortable while 0.75 folds."""
 
-    elastic_sigma: tuple[float, float, float] = (24.0, 16.0, 16.0)
+    elastic_sigma: tuple[float, float, float] = (24.0, 20.0, 20.0)
     """Correlation length in voxels per axis: the distance over which the
     deformation changes. Large means the volume bends gently as one, small
     means many local wobbles (and risks folding). `inf` makes the field
-    constant along that axis, i.e. the extruded 2D case."""
+    constant along that axis, i.e. the extruded 2D case -- which is no
+    protection against folding on its own, the in-plane ratio still rules."""
 
-    preview: int = 4
-    """Save a figure with this many z positions per variant (0 to skip)."""
+    preview: int = 0
+    """Save a figure with this many z positions per variant. 0 (the default)
+    writes no figures, just the augmented slices."""
 
 
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+
+
+def discover_patients(sliced_root: Path, subset: str) -> list[str]:
+    """Every patient in the subset, from the slice filenames.
+
+    Same grouping make_3d_dataset uses, so what we augment is exactly what the
+    3D pipeline will later read back as one volume.
+    """
+    img_dir = sliced_root / subset / "img"
+    if not img_dir.is_dir():
+        raise SystemExit(f"{img_dir} does not exist -- has the data been sliced?")
+
+    patients = sorted({"_".join(p.stem.split("_")[:2]) for p in img_dir.glob("*.png")})
+    if not patients:
+        raise SystemExit(f"No slices found in {img_dir}")
+    return patients
 
 
 def load_img_volume(sliced_root: Path, subset: str, patient: str) -> np.ndarray:
@@ -129,45 +152,28 @@ def load_img_volume(sliced_root: Path, subset: str, patient: str) -> np.ndarray:
     return load_volume(paths)
 
 
-def _read_v6_bytes(gt_v6: Path, patient: str) -> bytes:
-    """The patient's GT_4label_v6.nii.gz, from either the zip or a directory."""
-    name = f"{patient}/GT_4label_v6.nii.gz"
-
-    if gt_v6.is_dir():
-        path = gt_v6 / name
-        if not path.exists():
-            raise SystemExit(f"{path} not found")
-        return path.read_bytes()
-
-    with zipfile.ZipFile(gt_v6) as archive:
-        if name not in archive.namelist():
-            raise SystemExit(f"{name} not in {gt_v6}")
-        return archive.read(name)
-
-
-def load_v6_gt_volume(
-    gt_v6: Path, patient: str, shape: tuple[int, int], num_classes: int
+def load_gt_volume(
+    sliced_root: Path, subset: str, patient: str, num_classes: int
 ) -> np.ndarray:
-    """v6 labels as (D, H, W) uint8, resliced onto the sliced dataset's grid.
+    """Labels as (D, H, W) uint8 class indices, from the sliced gt PNGs.
 
-    The v6 NIfTI is (X, Y, Z) at the native 512x512; slice_segthor.py resizes
-    each z slice down with order=0, so we repeat exactly that.
+    They are stored as the class index times 255/(K-1), so divide back out and
+    round, exactly as gt_transform_* in train.py does.
     """
-    raw = gzip.decompress(_read_v6_bytes(gt_v6, patient))
-    volume = np.asarray(nib.Nifti1Image.from_bytes(raw).dataobj)
+    gt_dir = sliced_root / subset / "gt"
+    paths = sorted(gt_dir.glob(f"{patient}_*.png"))
+    if not paths:
+        raise SystemExit(f"No labels for {patient} in {gt_dir}")
 
-    labels = set(np.unique(volume).tolist())
-    if not labels <= set(range(num_classes)):
-        raise SystemExit(f"v6 GT for {patient} has labels {sorted(labels)}")
+    raw = load_volume(paths).astype(np.float32)
+    labels = np.round(raw / (255.0 / (num_classes - 1))).astype(np.uint8)
 
-    # (X, Y, Z) -> (D, H, W), one resize per slice
-    return np.stack(
-        [
-            resize_(volume[:, :, z], shape, order=0).astype(np.uint8)
-            for z in range(volume.shape[2])
-        ],
-        axis=0,
-    )
+    present = set(np.unique(labels).tolist())
+    if not present <= set(range(num_classes)):
+        raise SystemExit(
+            f"{patient}: labels {sorted(present)} outside 0..{num_classes - 1}"
+        )
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -351,16 +357,25 @@ def write_patient(
 # ---------------------------------------------------------------------------
 
 
-def report(gt_before: np.ndarray, gt_after: np.ndarray, num_classes: int) -> None:
-    """Per-class voxel counts, to catch organs warped out of the volume."""
-    print(f"    {'class':<12} {'before':>9} {'after':>9}   retained")
+def retention(
+    gt_before: np.ndarray, gt_after: np.ndarray, num_classes: int
+) -> tuple[float, str]:
+    """Worst per-class voxel retention, to catch organs warped out of frame.
+
+    Returns the ratio and the name of the class that fared worst. Well under
+    1.0 means the warp pushed part of an organ outside the volume; a little
+    over is just the zoom draw.
+    """
+    worst, worst_name = float("inf"), "-"
     for k in range(1, num_classes):
         before = int((gt_before == k).sum())
-        after = int((gt_after == k).sum())
-        name = CLASS_NAMES[k - 1] if k - 1 < len(CLASS_NAMES) else f"class {k}"
-        pct = f"{after / before:6.1%}" if before else "     --"
-        flag = "  <-- lost" if before and after / before < 0.9 else ""
-        print(f"    {name:<12} {before:9d} {after:9d}   {pct}{flag}")
+        if not before:
+            continue
+        ratio = int((gt_after == k).sum()) / before
+        if ratio < worst:
+            worst = ratio
+            worst_name = CLASS_NAMES[k - 1] if k - 1 < len(CLASS_NAMES) else f"c{k}"
+    return (worst, worst_name) if worst != float("inf") else (1.0, "-")
 
 
 def save_preview(
@@ -433,35 +448,28 @@ def save_preview(
 # ---------------------------------------------------------------------------
 
 
-def main(args: Args) -> None:
-    img = load_img_volume(args.sliced_root, args.subset, args.patient)
-    gt = load_v6_gt_volume(
-        args.gt_v6,
-        args.patient,
-        img.shape[1:],
-        args.num_classes,  # type: ignore[arg-type]
-    )
+def augment_patient(args: Args, patient: str) -> list[str]:
+    """Write every variant of one patient. Returns any warnings raised."""
+    img = load_img_volume(args.sliced_root, args.subset, patient)
+    gt = load_gt_volume(args.sliced_root, args.subset, patient, args.num_classes)
 
     if gt.shape != img.shape:
-        raise SystemExit(f"image is {img.shape} but v6 GT reslices to {gt.shape}")
+        raise SystemExit(f"{patient}: image is {img.shape} but labels are {gt.shape}")
 
-    print(f">> {args.patient}: {img.shape} (D, H, W)")
-    print(f"   v6 labels present: {sorted(np.unique(gt).tolist())}")
-    print(f"   writing to {args.out_root / args.subset}")
+    warnings: list[str] = []
 
     if args.write_original:
-        stem = f"{args.patient}v6"
-        print(f"\n>> {stem} (un-augmented, v6 labels)")
         write_patient(
-            args.out_root, args.subset, stem, img.astype(np.float32) / 255.0, gt
+            args.out_root, args.subset, patient, img.astype(np.float32) / 255.0, gt
         )
-        print(f"    wrote {img.shape[0]} slices")
 
     for i in range(1, args.variants + 1):
-        stem = f"{args.patient}a{i}"
+        # Seeded on the patient too, so one patient can be regenerated alone
+        # and still come out identical to its copy from a whole-dataset run.
+        # crc32, not hash(), which python randomises per process.
         seed = args.seed + i
-        rng = np.random.default_rng(seed)
-        print(f"\n>> {stem} (seed {seed})")
+        rng = np.random.default_rng([zlib.crc32(patient.encode()), seed])
+        stem = f"{patient}a{i}"
 
         offsets = elastic_offsets(
             img.shape,
@@ -473,20 +481,27 @@ def main(args: Args) -> None:
         grid = sampling_grid(img.shape, offsets, affine)  # type: ignore[arg-type]
 
         det = jacobian_min(offsets)
-        note = "  <-- field folds, lower alpha or raise sigma" if det <= 0 else ""
-        print(f"    min Jacobian determinant: {det:.3f}{note}")
-
         aug_img, aug_gt = warp(img, gt, grid)
 
         labels = set(np.unique(aug_gt).tolist())
         if not labels <= set(range(args.num_classes)):
-            raise SystemExit(
-                f"augmented labels escaped the class set: {sorted(labels)}"
-            )
+            raise SystemExit(f"{stem}: labels escaped the class set: {sorted(labels)}")
 
-        report(gt, aug_gt, args.num_classes)
+        kept, worst_class = retention(gt, aug_gt, args.num_classes)
         write_patient(args.out_root, args.subset, stem, aug_img, aug_gt)
-        print(f"    wrote {aug_img.shape[0]} slices")
+
+        flag = ""
+        if det <= 0:
+            flag = "  FOLDS"
+            warnings.append(f"{stem}: field folds (jac {det:.3f})")
+        elif kept < 0.9:
+            flag = f"  thin {worst_class}"
+            warnings.append(f"{stem}: {worst_class} kept only {kept:.0%}")
+
+        print(
+            f"  {stem:<16} {aug_img.shape[0]:4d} slices"
+            f"   jac {det:5.3f}   worst class kept {kept:5.0%}{flag}"
+        )
 
         if args.preview:
             save_preview(
@@ -498,6 +513,31 @@ def main(args: Args) -> None:
                 aug_gt,
                 args.preview,
             )
+
+    return warnings
+
+
+def main(args: Args) -> None:
+    patients = (
+        [args.patient]
+        if args.patient
+        else discover_patients(args.sliced_root, args.subset)
+    )
+
+    print(f">> {len(patients)} patient(s) in {args.sliced_root / args.subset}")
+    print(f"   {args.variants} variant(s) each -> {args.out_root / args.subset}\n")
+
+    warnings: list[str] = []
+    for patient in patients:
+        warnings += augment_patient(args, patient)
+
+    written = len(patients) * (args.variants + (1 if args.write_original else 0))
+    print(f"\n>> wrote {written} pseudo-patients")
+
+    if warnings:
+        print(f">> {len(warnings)} warning(s):")
+        for line in warnings:
+            print(f"     {line}")
 
 
 if __name__ == "__main__":
