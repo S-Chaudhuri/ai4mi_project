@@ -199,9 +199,7 @@ class BoxDataset(Dataset):
             del item["images"], item["gts"]
 
         n_vox = sum(v["img_vol"].size for v in self.items)
-        print(
-            f">> Created {subset} dataset with {len(self.items)} 3D patient volumes."
-        )
+        print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
         print(
             f"   Loaded all slices into RAM: {n_vox * 2 / 1e6:.0f} MB (img uint8 + gt)."
         )
@@ -391,4 +389,71 @@ class GridBoxDataset(BoxDataset):
             "images": img,
             "gts": gt,
             "stems": f"{item['stem']}_d{ds}_h{hs}_w{ws}",
+        }
+
+
+class CoarseDataset(BoxDataset):
+    """Dataset that returns the full 3D volume downsampled to a target size."""
+
+    def __init__(
+        self,
+        subset: str,
+        root_dir: Path,
+        img_transform=None,
+        gt_transform=None,
+        target_size: Tuple[int, int, int] = (64, 64, 64),
+        num_classes: int = 5,
+        debug: bool = False,
+    ):
+        super().__init__(
+            subset=subset,
+            root_dir=root_dir,
+            img_transform=img_transform,
+            gt_transform=gt_transform,
+            sub_box_size=None,
+            num_classes=num_classes,
+            fg_prob=0.0,
+            debug=debug,
+        )
+        self.target_size = target_size
+        print(f"   Target coarse size: {self.target_size}")
+
+    def __getitem__(self, idx: int) -> dict:
+        item = self.items[idx]
+
+        img = (
+            self.img_transform(item["img_vol"])
+            if self.img_transform
+            else torch.from_numpy(np.ascontiguousarray(item["img_vol"]))
+        )
+        gt = (
+            self.gt_transform(item["gt_cls"])
+            if self.gt_transform
+            else torch.from_numpy(item["gt_cls"].astype(np.int64, copy=False))
+        )
+
+        # F.interpolate requires shape (B, C, D, H, W)
+        img = (
+            F.interpolate(
+                img.unsqueeze(0).float(),
+                size=self.target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
+            .squeeze(0)
+            .to(img.dtype)
+        )
+
+        gt = (
+            F.interpolate(
+                gt.unsqueeze(0).float(), size=self.target_size, mode="nearest"
+            )
+            .squeeze(0)
+            .to(gt.dtype)
+        )
+
+        return {
+            "images": img,
+            "gts": gt,
+            "stems": item["stem"],
         }
