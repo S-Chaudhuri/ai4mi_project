@@ -324,4 +324,9 @@ def get_config() -> Config:
     # Make sure a gpu is available if configured to use
     config.training.gpu = config.training.gpu and torch.cuda.is_available()
 
+    # Use the provided project name or default to <dataset>-<model>
+    config.wandb.project = config.wandb.project or (
+        f"{config.dataset.name}-{config.model.name}"
+    )
+
     return config
