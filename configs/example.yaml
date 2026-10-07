@@ -1,32 +1,61 @@
-batch_size: 8
-betas:
-  - 0.9
-  - 0.999
+augmentation:
+  noise_level: 0.05
+  noise_prob: 0.5
 dataset:
+  box_size:
+  - 132
+  - 132
+  - 128
+  fg_prob: 0.5
   fold: 0
   name: SEGTHOR
   num_classes: 5
   retains: 5
-  seed: 0
   shape:
-    - 256
-    - 256
-debug: false
-dest: null
-dropout: 0.01
-epochs: 20
-gpu: true
-lr: 0.0005
-mode: full
-dims: 2d # Choose 2d or 3d
+  - 256
+  - 256
 model:
+  dropout: 0.01
   factor: 2
+  is_3d: false
   kernels: 8
   name: ENet
-noise_level: 0.05
-noise_prob: 0.5
-num_workers: 5
-seed: 42
-temperature: 1
-wandb_watch: false
-weight_decay: 0
+  temperature: 1.0
+paths:
+  data_path: /home/luuk/uni/year2/medical_imaging/our_project-config-restructuring/data
+  dest: null
+profiler:
+  active: 3
+  enabled: false
+  output_dir: null
+  profile_memory: false
+  record_shapes: false
+  wait: 1
+  warmup: 1
+  with_flops: false
+  with_modules: false
+  with_stack: false
+runtime:
+  debug: false
+  num_workers: 5
+training:
+  batch_size: 8
+  batches_per_epoch: 20
+  betas:
+  - 0.9
+  - 0.999
+  dice_weight: 1.0
+  epochs: 20
+  gpu: true
+  loss: ce
+  lr: 0.0005
+  mode: full
+  scheduler: cosine
+  seed: 42
+  weight_decay: 0
+wandb:
+  dir: null
+  entity: ai-for-medical-imaging
+  notes: null
+  project: null
+  watch: false
