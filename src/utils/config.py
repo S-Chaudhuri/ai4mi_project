@@ -130,13 +130,36 @@ class RuntimeConfig:
 
 @dataclass
 class AugmentationConfig:
-    """Data augmentation settings."""
+    """Online intensity augmentation of training images (off by default).
+
+    Geometric augmentation is done offline, by
+    src/preprocessing/augment_offline.py. (Should be in the data already)
+    These are the pointwise transforms that are cheap enough to redraw every 
+    time a sample is loaded. Each is drawn once per sample, so a whole 3D box 
+    gets the same gamma and contrast: the noise alone is drawn per voxel. 
+    Validation images are never augmented (they should be real images).
+    """
+
+    # Enable online augmentation.
+    enabled: bool = False
 
     # Probability of adding gaussian noise to a training image.
     noise_prob: float = 0.5
 
-    # Standard deviation of the gaussian noise.
+    # Standard deviation of the gaussian noise, in [0, 1] intensity units.
     noise_level: float = 0.05
+
+    # Probability of applying a gamma remap.
+    gamma_prob: float = 0.3
+
+    # Range the gamma exponent is drawn from. Below 1 brightens, above darkens.
+    gamma_range: tuple[float, float] = (0.7, 1.5)
+
+    # Probability of applying a contrast change.
+    contrast_prob: float = 0.3
+
+    # Range the contrast factor is drawn from, around a fixed 0.5 pivot.
+    contrast_range: tuple[float, float] = (0.8, 1.25)
 
 
 @dataclass

@@ -42,6 +42,7 @@ import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
 from src.utils.dataset import SliceDataset, BoxDataset
+from src.utils.augmentations_online import make_img_transform
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
 from src.models.UNet3D import UNet3D
@@ -71,13 +72,6 @@ def img_transform_2d(img):
     img = img / 255  # max <= 1
     img = torch.tensor(img, dtype=torch.float32)
     return img
-
-
-def noised_img_transform(img, p: float, sigma: float):
-    img = img_transform_2d(img)
-    if np.random.random() < p:
-        img = img + torch.randn_like(img) * sigma
-    return img.clamp(0.0, 1.0)
 
 
 def gt_transform_2d(K, img):
@@ -199,10 +193,14 @@ def build_dataloaders(config: Config):
         img_transform = img_transform_2d
         gt_transform = partial(gt_transform_2d, num_classes)
 
+    # Online intensity augmentation wraps the image transform, so only the
+    # training set sees it; val_set below keeps the plain one.
+    train_img_transform = make_img_transform(img_transform, config.augmentation)
+
     train_set = dataset_cls(
         "train",
         data_root_dir,
-        img_transform=img_transform,
+        img_transform=train_img_transform,
         gt_transform=gt_transform,
         debug=config.runtime.debug,
         **dataset_kwargs,
@@ -403,7 +401,11 @@ def runTraining(config: Config):
     )
     log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
+        (
+            config.training.epochs,
+            len(val_loader.dataset) * config.training.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
         (
@@ -413,7 +415,11 @@ def runTraining(config: Config):
         )  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader.dataset) * config.training.batches_per_epoch, num_classes)  # type: ignore
+        (
+            config.training.epochs,
+            len(val_loader.dataset) * config.training.batches_per_epoch,
+            num_classes,
+        )  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
         (

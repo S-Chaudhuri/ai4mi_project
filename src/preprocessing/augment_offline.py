@@ -3,27 +3,17 @@
 """Offline augmentation: write augmented copies of a patient as new pseudo-patients.
 
 This produces PNG slices in the same layout as slice_segthor.py, so both
-SliceDataset (2D) and BoxDataset (3D) pick them up with no code changes -- the
-"3D dataset" is not a separate set of files, it is the same PNGs grouped by
-patient and stacked into volumes at training time.
+SliceDataset (2D) and BoxDataset (3D) pick them up with no code changes 
 
-Ground truth comes from Patient_labels_GTv6.zip, NOT from data/SEGTHOR/*/gt.
-The sliced GT on disk merges the esophagus and the aorta into class 1; the v6
-labels separate them (1 esophagus, 2 heart, 3 trachea, 4 aorta), so only v6 has
-the 4 foreground classes that num_classes=5 expects. The CT images still come
-from the sliced PNGs, since data/segthor_part1 is not unpacked.
 
 This script does the geometry only: affine (skew, rotation, scale, shift) and
-elastic. Those are the expensive transforms, and the ones that have to be drawn
-once for the whole patient -- every slice of a pseudo-patient is warped
-consistently, so stacking them back into a volume does not tear the anatomy.
-The two are composed into a single sampling grid and resampled once, so the
-labels take only one nearest-neighbour pass.
+elastic, the expensive transforms. Every slice of a pseudo-patient is warped
+consistently, so stacking them back into a volume should not tear the anatomy
+(I think...) The two are composed into a single sampling grid and resampled once, 
+so the labels take only one nearest-neighbour pass.
 
-The cheap per-sample transforms (noise, gamma, brightness, contrast) belong
-online, in the training dataset: they cost microseconds, they do not need to be
-coherent across a patient, and baking them to disk would freeze a transform
-that is free to redraw every time a sample is seen.
+The cheap per-sample transforms (noise, gamma, brightness, contrast) will be 
+done online.
 
 Usage:
     # two augmented variants of Patient_07, plus the un-augmented v6 reference
