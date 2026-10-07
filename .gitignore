@@ -16,3 +16,4 @@ wandb/
 .vscode/
 logs/
 .worktrees/
+profiler/
