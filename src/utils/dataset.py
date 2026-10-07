@@ -416,7 +416,21 @@ class CoarseDataset(BoxDataset):
             debug=debug,
         )
         self.target_size = target_size
-        print(f"   Target coarse size: {self.target_size}")
+        
+        # Pre-compute the coarse versions of the volumes once here in __init__
+        for item in self.items:
+            # (1, 1, D, H, W) for F.interpolate
+            img_t = torch.from_numpy(item["img_vol"]).unsqueeze(0).unsqueeze(0).float()
+            gt_t = torch.from_numpy(item["gt_cls"]).unsqueeze(0).unsqueeze(0).float()
+            
+            img_coarse = F.interpolate(img_t, size=self.target_size, mode="trilinear", align_corners=False)
+            gt_coarse = F.interpolate(gt_t, size=self.target_size, mode="nearest")
+            
+            # Replace the high-res volumes with coarse versions in RAM (maintaining the original dtype)
+            item["img_vol"] = img_coarse.squeeze(0).squeeze(0).numpy().astype(item["img_vol"].dtype)
+            item["gt_cls"] = gt_coarse.squeeze(0).squeeze(0).numpy().astype(item["gt_cls"].dtype)
+
+        print(f"   Target coarse size: {self.target_size} (pre-computed in memory)")
 
     def __getitem__(self, idx: int) -> dict:
         item = self.items[idx]
@@ -430,26 +444,6 @@ class CoarseDataset(BoxDataset):
             self.gt_transform(item["gt_cls"])
             if self.gt_transform
             else torch.from_numpy(item["gt_cls"].astype(np.int64, copy=False))
-        )
-
-        # F.interpolate requires shape (B, C, D, H, W)
-        img = (
-            F.interpolate(
-                img.unsqueeze(0).float(),
-                size=self.target_size,
-                mode="trilinear",
-                align_corners=False,
-            )
-            .squeeze(0)
-            .to(img.dtype)
-        )
-
-        gt = (
-            F.interpolate(
-                gt.unsqueeze(0).float(), size=self.target_size, mode="nearest"
-            )
-            .squeeze(0)
-            .to(gt.dtype)
         )
 
         return {
