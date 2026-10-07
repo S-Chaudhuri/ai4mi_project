@@ -30,9 +30,10 @@ def img_transform_3d(vol):
     return t.unsqueeze(0) if t.ndim == 3 else t
 
 
+# BoxDataset decodes the quantized GT to class indices once per volume, so the
+# transform only has to one-hot the (int8 class-index) box.
 def gt_transform_3d(K, vol):
-    vol = np.round(np.array(vol, dtype=np.float32) / 63.0).astype(np.int64)
-    return class2one_hot(torch.from_numpy(vol)[None, ...], K=K)[0]
+    return class2one_hot(torch.from_numpy(vol.astype(np.int64))[None, ...], K=K)[0]
 
 
 gt_t = partial(gt_transform_3d, NUM_CLASSES)
@@ -45,6 +46,7 @@ def make_ds(fg_prob):
         img_transform=img_transform_3d,
         gt_transform=gt_t,
         sub_box_size=BOX_SIZE,
+        num_classes=NUM_CLASSES,
         fg_prob=fg_prob,
     )
 

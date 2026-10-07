@@ -127,6 +127,20 @@ class RuntimeConfig:
     # Number of worker processes per DataLoader.
     num_workers: int = 5
 
+    # Also compute HD95 on training batches (expensive: scipy per sample/class).
+    # Off by default: the train pass logs loss and dice only, validation still
+    # reports HD95 every epoch.
+    hd95_in_train: bool = False
+
+    # Mixed-precision autocast dtype on GPU. "bf16" (default) is faster on
+    # Hopper, needs no GradScaler and has no fp16 range issues. "fp16" keeps
+    # the old behavior (GradScaler enabled, loss computed outside autocast).
+    amp_dtype: Literal["bf16", "fp16"] = "bf16"
+
+    # Let cuDNN benchmark convolution algorithms per shape. Faster, but
+    # slightly non-deterministic; off by default to keep runs reproducible.
+    cudnn_benchmark: bool = False
+
 
 @dataclass
 class AugmentationConfig:
@@ -178,6 +192,9 @@ class WandbConfig:
 
     # Log gradient and parameter histograms via wandb.watch.
     watch: bool = False
+
+    # Store the checksum of the dataset
+    store_artifect: bool = True
 
     # Free-form notes attached to the wandb run.
     notes: Optional[str] = None
@@ -329,5 +346,10 @@ def get_config() -> Config:
 
     # Make sure a gpu is available if configured to use
     config.training.gpu = config.training.gpu and torch.cuda.is_available()
+
+    # Use the provided project name or default to <dataset>-<model>
+    config.wandb.project = config.wandb.project or (
+        f"{config.dataset.name}-{config.model.name}"
+    )
 
     return config

@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=bench_loop
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=logs/bench_%j.out
+
+export PATH="$HOME/.local/bin:$PATH"
+cd "$(dirname "$0")/.."
+
+uv run python snellius_bench.py \
+    --data_path /scratch-shared/scur0088/data \
+    --dataset SEGTHOR \
+    --batch_size 8 \
+    --num_workers 8 \
+    --batches_per_epoch 10
