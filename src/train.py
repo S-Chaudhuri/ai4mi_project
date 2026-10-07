@@ -402,35 +402,35 @@ def runTraining(config: Config):
     )
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
-    log_loss_tra: Tensor = torch.zeros((config.training.epochs, len(train_loader)))
+    log_loss_tra: Tensor = torch.zeros((config.training.epochs, len(train_loader)), device=device)
     log_dice_tra: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        )  # type: ignore
+        ), device=device  # type: ignore
     )
-    log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)))
+    log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)), device=device)
     log_dice_val: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        )  # type: ignore
+        ), device=device  # type: ignore
     )
     log_hd95_tra: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        )  # type: ignore
+        ), device=device  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        )  # type: ignore
+        ), device=device  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
         (
@@ -438,7 +438,7 @@ def runTraining(config: Config):
             len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
-        dtype=torch.bool,
+        dtype=torch.bool, device=device
     )
     log_present_val: Tensor = torch.zeros(
         (
@@ -446,7 +446,7 @@ def runTraining(config: Config):
             len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
-        dtype=torch.bool,
+        dtype=torch.bool, device=device
     )
 
     best_dice: float = 0
@@ -524,7 +524,7 @@ def runTraining(config: Config):
                     # Computed outside autocast: under CUDA fp16 autocast the
                     # einsum in the loss is promoted to fp16 and overflows
                     loss = loss_fn(pred_probs, gt)
-                    log_loss[e, i] = loss.item()  # One loss value per batch
+                    log_loss[e, i] = loss.detach()  # One loss value per batch
 
                     if opt is not None:  # Only for training
                         scaler.scale(loss).backward()
