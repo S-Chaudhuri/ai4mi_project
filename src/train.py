@@ -63,8 +63,6 @@ from src.utils.utils import (
 from src.utils.losses import (
     CrossEntropy,
     CrossEntropyPlusDice,
-    CrossEntropy2D,
-    CrossEntropyPlusDice2D,
 )
 
 
@@ -307,17 +305,15 @@ def get_loss_func(config: Config):
     else:
         raise ValueError(config.training.mode, config.dataset.name)
 
-    if config.model.is_3d:
-        ce_cls, ce_dice_cls = CrossEntropy, CrossEntropyPlusDice
-    else:
-        ce_cls, ce_dice_cls = CrossEntropy2D, CrossEntropyPlusDice2D
-
     if config.training.loss == "ce":
-        return ce_cls(idk=idk)
+        return CrossEntropy(idk=idk)
     elif config.training.loss == "dice_ce":
         dice_idk = [c for c in idk if c != 0]
-        return ce_dice_cls(
-            ce_idk=idk, dice_idk=dice_idk, dice_weight=config.training.dice_weight
+        return CrossEntropyPlusDice(
+            ce_idk=idk,
+            dice_idk=dice_idk,
+            is_3d=config.model.is_3d,
+            dice_weight=config.training.dice_weight,
         )
     else:
         raise ValueError(config.training.loss)
@@ -411,35 +407,39 @@ def runTraining(config: Config):
     )
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
-    log_loss_tra: Tensor = torch.zeros((config.training.epochs, len(train_loader)), device=device)
-    log_dice_tra: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(train_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ), device=device  # type: ignore
+    log_loss_tra: Tensor = torch.zeros(
+        (config.training.epochs, len(train_loader)), device=device
     )
-    log_loss_val: Tensor = torch.zeros((config.training.epochs, len(val_loader)), device=device)
-    log_dice_val: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(val_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ), device=device  # type: ignore
+    inter_tra: Tensor = torch.zeros(
+        (config.training.epochs, num_classes), device=device
+    )
+    union_tra: Tensor = torch.zeros(
+        (config.training.epochs, num_classes), device=device
+    )
+    log_loss_val: Tensor = torch.zeros(
+        (config.training.epochs, len(val_loader)), device=device
+    )
+    inter_val: Tensor = torch.zeros(
+        (config.training.epochs, num_classes), device=device
+    )
+    union_val: Tensor = torch.zeros(
+        (config.training.epochs, num_classes), device=device
     )
     log_hd95_tra: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        ), device=device  # type: ignore
+        ),
+        device=device,  # type: ignore
     )
     log_hd95_val: Tensor = torch.zeros(
         (
             config.training.epochs,
             len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
-        ), device=device  # type: ignore
+        ),
+        device=device,  # type: ignore
     )
     log_present_tra: Tensor = torch.zeros(
         (
@@ -447,7 +447,8 @@ def runTraining(config: Config):
             len(train_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
-        dtype=torch.bool, device=device
+        dtype=torch.bool,
+        device=device,
     )
     log_present_val: Tensor = torch.zeros(
         (
@@ -455,7 +456,8 @@ def runTraining(config: Config):
             len(val_loader.dataset) * config.training.batches_per_epoch,
             num_classes,
         ),  # type: ignore
-        dtype=torch.bool, device=device
+        dtype=torch.bool,
+        device=device,
     )
 
     best_dice: float = 0
@@ -472,7 +474,8 @@ def runTraining(config: Config):
                     desc = f">> Training   ({e: 4d})"
                     loader = train_loader
                     log_loss = log_loss_tra
-                    log_dice = log_dice_tra
+                    inter = inter_tra
+                    union = union_tra
                     log_hd95 = log_hd95_tra
                     log_present = log_present_tra
                 case "val":
@@ -482,7 +485,8 @@ def runTraining(config: Config):
                     desc = f">> Validation ({e: 4d})"
                     loader = val_loader
                     log_loss = log_loss_val
-                    log_dice = log_dice_val
+                    inter = inter_val
+                    union = union_val
                     log_hd95 = log_hd95_val
                     log_present = log_present_val
                 case _:
@@ -506,9 +510,7 @@ def runTraining(config: Config):
                     assert 0 <= img.min() and img.max() <= 1
                     batch_size = img.shape[0]  # works for (B,C,W,H) and (B,C,D,W,H)
 
-                    # HD95 is a scipy (erosion + cKDTree) loop per sample and
-                    # class: seconds per batch. Only run it on validation
-                    # unless explicitly enabled for training.
+                    # HD95 takes seconds per batch. So we only run it on validation or explicitly set
                     compute_hd95 = m == "val" or config.runtime.hd95_in_train
 
                     with torch.autocast(device_type=device_type, dtype=amp_dtype):
@@ -518,11 +520,16 @@ def runTraining(config: Config):
                         )
 
                         # Metrics computation, not used for training
-                        pred_seg = probs2one_hot(pred_probs)
-                        log_dice[e, j : j + batch_size, :] = dice_coef(
-                            pred_seg, gt
-                        )  # One DSC value per sample and per class
+                        pred_class = probs2class(pred_probs)
+                        gt_class = probs2class(gt)
+                        for k in range(num_classes):
+                            inter[e, k] += ((pred_class == k) & (gt_class == k)).sum()
+                            union[e, k] += (pred_class == k).sum() + (
+                                gt_class == k
+                            ).sum()
+
                         if compute_hd95:
+                            pred_seg = class2one_hot(pred_class, num_classes)
                             log_hd95[e, j : j + batch_size, :] = hd95_coef(
                                 pred_seg, gt, spacing_mm=data_spacing
                             )
@@ -565,8 +572,8 @@ def runTraining(config: Config):
                     present = log_present[e, :j, 1:]
 
                     postfix_dict: dict[str, str] = {
-                        "Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
-                        "GDice": f"{masked_mean(log_dice[e, :j, 1:], present):05.3f}",
+                        "Dice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
+                        "GDice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
                     if compute_hd95:
@@ -575,7 +582,7 @@ def runTraining(config: Config):
                         )
                     if num_classes > 2:
                         postfix_dict |= {
-                            f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
+                            f"Dice-{k}": f"{((2 * inter[e, k] + 1e-8) / (union[e, k] + 1e-8)):05.3f}"
                             for k in range(1, num_classes)
                         }
                     tq_iter.set_postfix(postfix_dict)
@@ -583,16 +590,14 @@ def runTraining(config: Config):
         metrics = {
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
-            "train/dice": log_dice_tra[e, :, 1:].mean().item(),
-            "train/gated_dice": masked_mean(
-                log_dice_tra[e, :, 1:], log_present_tra[e, :, 1:]
-            ).item(),
+            "train/dice": ((2 * inter_tra[e, 1:] + 1e-8) / (union_tra[e, 1:] + 1e-8))
+            .mean()
+            .item(),
             # "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
-            "val/dice": log_dice_val[e, :, 1:].mean().item(),
-            "val/gated_dice": masked_mean(
-                log_dice_val[e, :, 1:], log_present_val[e, :, 1:]
-            ).item(),
+            "val/dice": ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8))
+            .mean()
+            .item(),
             "val/hd95": masked_mean(
                 log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
             ).item(),
@@ -605,8 +610,12 @@ def runTraining(config: Config):
 
         if num_classes > 2:
             for k in range(1, num_classes):
-                metrics[f"train/dice_{k}"] = log_dice_tra[e, :, k].mean().item()
-                metrics[f"val/dice_{k}"] = log_dice_val[e, :, k].mean().item()
+                metrics[f"train/dice_{k}"] = (
+                    (2 * inter_tra[e, k] + 1e-8) / (union_tra[e, k] + 1e-8)
+                ).item()
+                metrics[f"val/dice_{k}"] = (
+                    (2 * inter_val[e, k] + 1e-8) / (union_val[e, k] + 1e-8)
+                ).item()
                 if config.runtime.hd95_in_train:
                     metrics[f"train/hd95_{k}"] = masked_mean(
                         log_hd95_tra[e, :, k], log_present_tra[e, :, k]
@@ -620,13 +629,9 @@ def runTraining(config: Config):
         if scheduler is not None:
             scheduler.step()
 
-        # np.save(result_dir / "loss_tra.npy", log_loss_tra)
-        # np.save(result_dir / "dice_tra.npy", log_dice_tra)
-        # np.save(result_dir / "loss_val.npy", log_loss_val)
-        # np.save(result_dir / "dice_val.npy", log_dice_val)
-        #
-
-        current_dice: float = log_dice_val[e, :, 1:].mean().item()
+        current_dice: float = (
+            ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8)).mean().item()
+        )
         if current_dice > best_dice:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
@@ -634,11 +639,6 @@ def runTraining(config: Config):
             with open(result_dir / "best_epoch.txt", "a") as f:
                 f.write(message)
 
-            # best_folder = result_dir / "best_epoch"
-            # if best_folder.exists():
-            #     rmtree(best_folder)
-            # copytree(result_dir / f"iter{e:03d}", Path(best_folder))
-            #
             torch.save(net.state_dict(), result_dir / "bestweights.pt")
 
     if profiler is not None:
@@ -654,8 +654,7 @@ def main():
     # Setup wandb
     wandb.init(
         entity=config.wandb.entity,
-        project=config.wandb.project
-        or f"{config.dataset.name}-{'3D' if config.model.is_3d else '2D'}",
+        project=config.wandb.project,
         config=dataclasses.asdict(config),
         dir=config.wandb.dir or (autoroot.root / "results" / "wandb"),
         notes=config.wandb.notes,
