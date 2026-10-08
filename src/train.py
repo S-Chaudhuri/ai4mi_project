@@ -57,6 +57,7 @@ from src.utils.utils import (
     masked_mean,
     hd95_coef,
     save_images,
+    dice_from_counts
 )
 from src.utils.losses import (
     CrossEntropy,
@@ -408,19 +409,19 @@ def runTraining(config: Config):
         (config.training.epochs, len(train_loader)), device=device
     )
     inter_tra: Tensor = torch.zeros(
-        (config.training.epochs, num_classes), device=device
+        (config.training.epochs, num_classes), dtype=torch.int64, device=device
     )
     union_tra: Tensor = torch.zeros(
-        (config.training.epochs, num_classes), device=device
+        (config.training.epochs, num_classes), dtype=torch.int64, device=device
     )
     log_loss_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader)), device=device
+        (config.training.epochs, len(val_loader)), dtype=torch.int64, device=device
     )
     inter_val: Tensor = torch.zeros(
-        (config.training.epochs, num_classes), device=device
+        (config.training.epochs, num_classes), dtype=torch.int64, device=device
     )
     union_val: Tensor = torch.zeros(
-        (config.training.epochs, num_classes), device=device
+        (config.training.epochs, num_classes), dtype=torch.int64, device=device
     )
     # j counts samples seen in the epoch; with the 3D replacement sampler an
     # epoch holds batches_per_epoch * batch_size samples, which exceeds
@@ -531,8 +532,11 @@ def runTraining(config: Config):
 
                         if compute_hd95:
                             pred_seg = class2one_hot(pred_class, num_classes)
+                            # HD95 is only computed for samples where the class is present in the GT
                             log_hd95[e, j : j + batch_size, :] = hd95_coef(
-                                pred_seg, gt, spacing_mm=data_spacing
+                                label=gt,
+                                pred=pred_seg,
+                                spacing_mm=data_spacing,
                             )
                         log_present[e, j : j + batch_size, :] = (
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
@@ -572,67 +576,77 @@ def runTraining(config: Config):
                     # HD95 and gated dice are only averaged over samples where the class is in the gt
                     present = log_present[e, :j, 1:]
 
+                    class_dice = dice_from_counts(inter[e], union[e])
+
                     postfix_dict: dict[str, str] = {
-                        "Dice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
-                        "GDice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
-                        "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
+                        "Dice": (
+                            f"{torch.nanmean(class_dice[1:]).item():05.3f}"
+                        ),
+                        "Loss": (
+                            f"{log_loss[e, :i + 1].mean().item():5.2e}"
+                        ),
                     }
+
                     if compute_hd95:
                         postfix_dict["HD95"] = (
-                            f"{masked_mean(log_hd95[e, :j, 1:], present):05.2f}"
+                            f"{masked_mean(log_hd95[e, :j, 1:], present).item():05.2f}"
                         )
+
                     if num_classes > 2:
-                        postfix_dict |= {
-                            f"Dice-{k}": f"{((2 * inter[e, k] + 1e-8) / (union[e, k] + 1e-8)):05.3f}"
+                        postfix_dict.update({
+                            f"Dice-{k}": f"{class_dice[k].item():05.3f}"
                             for k in range(1, num_classes)
-                        }
+                        })
+
                     tq_iter.set_postfix(postfix_dict)
+
+        train_dice = dice_from_counts(inter_tra[e], union_tra[e])
+        val_dice = dice_from_counts(inter_val[e], union_val[e])
 
         metrics = {
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
-            "train/dice": ((2 * inter_tra[e, 1:] + 1e-8) / (union_tra[e, 1:] + 1e-8))
-            .mean()
-            .item(),
-            # "train/acc": acc_tra,
             "val/loss": log_loss_val[e].mean().item(),
-            "val/dice": ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8))
-            .mean()
-            .item(),
+
+            "train/dice": torch.nanmean(train_dice[1:]).item(),
+            "val/dice": torch.nanmean(val_dice[1:]).item(),
+
             "val/hd95": masked_mean(
-                log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
+                log_hd95_val[e, :, 1:],
+                log_present_val[e, :, 1:],
             ).item(),
-            # "val/acc": acc_val,
         }
+
         if config.runtime.hd95_in_train:
             metrics["train/hd95"] = masked_mean(
-                log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]
+                log_hd95_tra[e, :, 1:],
+                log_present_tra[e, :, 1:],
             ).item()
 
         if num_classes > 2:
             for k in range(1, num_classes):
-                metrics[f"train/dice_{k}"] = (
-                    (2 * inter_tra[e, k] + 1e-8) / (union_tra[e, k] + 1e-8)
-                ).item()
-                metrics[f"val/dice_{k}"] = (
-                    (2 * inter_val[e, k] + 1e-8) / (union_val[e, k] + 1e-8)
-                ).item()
+                metrics[f"train/dice_{k}"] = train_dice[k].item()
+                metrics[f"val/dice_{k}"] = val_dice[k].item()
+
                 if config.runtime.hd95_in_train:
                     metrics[f"train/hd95_{k}"] = masked_mean(
-                        log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+                        log_hd95_tra[e, :, k],
+                        log_present_tra[e, :, k],
                     ).item()
+
                 metrics[f"val/hd95_{k}"] = masked_mean(
-                    log_hd95_val[e, :, k], log_present_val[e, :, k]
+                    log_hd95_val[e, :, k],
+                    log_present_val[e, :, k],
                 ).item()
+
         wandb.log(metrics)
 
         # Scheduler at the end of each epoch
         if scheduler is not None:
             scheduler.step()
 
-        current_dice: float = (
-            ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8)).mean().item()
-        )
+        current_dice: float = torch.nanmean(val_dice[1:]).item()
+        
         if current_dice > best_dice:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
