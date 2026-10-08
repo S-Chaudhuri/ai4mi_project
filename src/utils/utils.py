@@ -29,6 +29,8 @@ from typing import Callable, Iterable, List, Set, Tuple, TypeVar, cast
 import torch
 import numpy as np
 import random
+import pickle
+import re
 from PIL import Image
 from tqdm import tqdm
 from torch import Tensor, einsum
@@ -170,18 +172,10 @@ dice_coef = partial(meta_dice, "bk...->bk")
 dice_batch = partial(meta_dice, "bk...->k")  # used for 3d dice
 
 
-def masked_mean(values: Tensor, present: Tensor) -> Tensor:
-    """Average eligible values; return NaN if none are eligible."""
-    assert values.shape == present.shape
-
-    selected_sum = values.masked_fill(~present, 0.0).sum()
-    count = present.sum()
-
-    return torch.where(
-        count > 0,
-        selected_sum / count.clamp_min(1),
-        torch.full_like(selected_sum, float("nan")),
-    )
+def masked_mean(dice: Tensor, present: Tensor) -> Tensor:
+    # Mean of the dice values over where the class is actually present in gt
+    assert dice.shape == present.shape
+    return dice.masked_fill(~present, 0.0).sum() / present.sum().clamp(min=1)
 
 
 def intersection(a: Tensor, b: Tensor) -> Tensor:
@@ -225,50 +219,32 @@ def _asymmetric_distance(a_coords: Tensor, b_coords: Tensor) -> Tensor:
     dist, _ = cKDTree(b).query(a, k=1)
     return torch.from_numpy(dist.astype(np.float32))
 
+
 def _max_distance(shape: tuple[int, ...], spacing_mm: tuple) -> float:
-    """Maximum distance between voxel centres on the evaluated grid."""
-    shape = np.asarray(shape, dtype=np.float64)
+    # Worst-case distance between two surfaces: the diagonal of the volume, in mm
+    dims = np.asarray(shape[: len(spacing_mm)], dtype=np.float64)
     spacing = np.asarray(spacing_mm, dtype=np.float64)
-
-    if spacing.shape != shape.shape:
-        raise ValueError("Spacing must have one value per spatial axis.")
-    if not np.isfinite(spacing).all() or np.any(spacing <= 0):
-        raise ValueError("Spacing must contain finite, positive values.")
-
-    return float(np.linalg.norm(np.maximum(shape - 1, 0) * spacing))
+    return float(np.linalg.norm(dims * spacing))
 
 
 def hausdorff_distance(
-    a: np.ndarray, b: np.ndarray, spacing_mm: tuple, percentile: float,
+    a: np.ndarray, b: np.ndarray, spacing_mm: tuple, percentile: float
 ) -> float:
-    """Symmetric HD using the maximum of directional percentiles."""
-    a = np.asarray(a, dtype=bool)
-    b = np.asarray(b, dtype=bool)
-
-    if a.shape != b.shape:
-        raise ValueError("Masks must have the same shape.")
-    if not 0 <= percentile <= 100:
-        raise ValueError("Percentile must be between 0 and 100.")
-
-    diagonal = _max_distance(a.shape, spacing_mm)
-
-    if not a.any() and not b.any():
-        return 0.0
-
-    if not a.any() or not b.any():
-        return diagonal
-
-    a_coords = _surface_coords(a, spacing_mm)
-    b_coords = _surface_coords(b, spacing_mm)
+    a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
+    if len(a_coords) == 0 or len(b_coords) == 0:
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
 
     dist_ab = _asymmetric_distance(a_coords, b_coords)
     dist_ba = _asymmetric_distance(b_coords, a_coords)
 
+    if percentile >= 100.0:
+        return torch.max(dist_ab.max(), dist_ba.max()).item()
+
     q = percentile / 100.0
-    return max(
-        torch.quantile(dist_ab, q).item(),
-        torch.quantile(dist_ba, q).item(),
-    )
+    return torch.max(torch.quantile(dist_ab, q), torch.quantile(dist_ba, q)).item()
+
 
 def average_hausdorff_distance(
     a: np.ndarray, b: np.ndarray, spacing_mm: tuple
@@ -438,13 +414,12 @@ def deep_update(base_dict: dict, update_dict: dict) -> dict:
             base_dict[key] = value
     return base_dict
 
-def dice_from_counts(intersection: Tensor, total: Tensor) -> Tensor:
-    """Dice from counts; both-empty classes are excluded using NaN."""
-    intersection = intersection.to(torch.float64)
-    total = total.to(torch.float64)
+def load_spacing(data_root, png_hw=256, orig_hw=512):
+    """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
+    with open(Path(data_root) / "spacing.pkl", "rb") as f:
+        raw = pickle.load(f)                      # id -> (dx, dy, dz) of the original CT
+    s = orig_hw / png_hw
+    return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
 
-    return torch.where(
-        total > 0,
-        2.0 * intersection / total.clamp_min(1),
-        torch.full_like(total, float("nan")),
-    )
+def patient_key(stem):                            # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
+    return re.sub(r"a\d+$", "", "_".join(stem.split("_")[:2]))
