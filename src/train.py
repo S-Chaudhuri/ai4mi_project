@@ -57,8 +57,8 @@ from src.utils.utils import (
     masked_mean,
     hd95_coef,
     save_images,
-    spacing_map,
     patient_key,
+    load_spacing,
 )
 from src.utils.losses import (
     CrossEntropy,
@@ -532,6 +532,7 @@ def runTraining(config: Config):
                             ).sum()
 
                         if compute_hd95:
+                            spacing_map = load_spacing(config.paths.data_path / config.dataset.name) if config.model.is_3d else None
                             pred_seg = class2one_hot(pred_class, num_classes)
                             for b in range(batch_size):
                                 sp = spacing_map[patient_key(data["stems"][b])] if spacing_map else data_spacing

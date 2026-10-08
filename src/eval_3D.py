@@ -12,6 +12,7 @@ from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.config import Config, DatasetConfig
 from src.train import get_model
 from src.utils.utils import hausdorff_distance, load_spacing, patient_key
+from src.utils.evaluation import to_native_space, load_native_gt, evaluate_patient, write_csv, write_submission
 
 def gaussian_window(size, sigma_scale=1 / 8):
     ws = []
@@ -92,29 +93,25 @@ def run_eval(args: "Args"):
     ds = BoxDataset(args.split, root, sub_box_size=None, num_classes=K)   # whole volumes, no transforms
     spacing_map = load_spacing(root)
 
+    results = {}
     for item in ds.items:
         if args.patient_id is not None and item["stem"] != f"Patient_{args.patient_id:02d}":
             continue
         img = torch.from_numpy(item["img_vol"]).float() / 255.0
         probs = predict_volume(net, img, cfg.dataset.box_size, args.overlap, K, args.batch_size,
-                               device, cfg.dataset.use_coords, cfg.model.temperature)
-        pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)    # (D, H, W)
-        gt = item["gt_cls"]
-        sp = spacing_map[patient_key(item["stem"])]
+                            device, cfg.dataset.use_coords, cfg.model.temperature)
+        pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)     # (D, 256, 256)
 
-        row = []
-        for k in range(1, K):
-            g, p = gt == k, pred == k
-            if not g.any():
-                row.append("   n/a"); continue
-            dice = 2 * (g & p).sum() / (g.sum() + p.sum())
-            hd = hausdorff_distance(g, p, sp, 95.0)
-            row.append(f"c{k}: dice {dice:.3f} hd95 {hd:5.1f}mm")
-        print(item["stem"], " | ".join(row))
+        gt_xyz, spacing, affine = load_native_gt(autoroot.root / "data", item["stem"])
+        pred_xyz = to_native_space(pred, gt_xyz.shape)                     # back to 512x512, native grid
+        results[item["stem"]] = evaluate_patient(pred_xyz, gt_xyz, spacing)
+        print(item["stem"], results[item["stem"]])
 
-        if args.save_nii:
-            out = args.nii_out or autoroot.root / "results" / "predictions" / f"{item['stem']}_pred.nii.gz"
-            save_prediction_nii(pred, int(item["stem"].split("_")[1]), out)
+        if args.submission_dir:
+            write_submission(pred_xyz, affine, item["stem"], args.submission_dir)
+
+    write_csv(results, args.csv_out)
+    print(f">> Wrote metrics to {args.csv_out}")
 
 @dataclass
 class Args:
@@ -128,3 +125,5 @@ class Args:
     batch_size: int = 4
     save_nii: bool = True
     nii_out: Path | None = None
+    csv_out: Path = Path("results/metrics.csv")
+    submission_dir: Path | None = None
