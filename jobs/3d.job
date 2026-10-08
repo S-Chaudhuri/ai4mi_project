@@ -7,13 +7,15 @@
 #SBATCH --output=logs/%j/out.log
 #SBATCH --constraint=scratch-node
 
+# Stream dataset to nvme on node for fast access
+# Only thing to remember when using this, is to set path.data_path as "$TMPDIR"
 tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
 
+# Run python with -O to turn off asserts
 uv run python -O /home/scur0088/project/src/train.py \
-    --config /home/scur0088/project/configs/2d.yaml \
-    --model.name UNet3D \
-    --model.is_3d \
-    --dataset.box_size 132 132 128 \
-    --dataset.fg_prob 0.7 \
-    --paths.data_path "$TMPDIR"
-    
+  --config /home/scur0088/project/configs/2d.yaml \
+  --model.name UNet3D \
+  --model.is_3d \
+  --dataset.box_size 132 132 128 \
+  --dataset.fg_prob 0.7 \
+  --paths.data_path "$TMPDIR"
