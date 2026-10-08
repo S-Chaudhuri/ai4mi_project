@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_aug
+#SBATCH --partition=regular
+#SBATCH --cpus-per-task=20
+#SBATCH --time=03:00:00
+#SBATCH --output=logs/%j/out.log
+
+# Offline geometric augmentation of the complete sliced SEGTHOR dataset.
+# Writes 2 warped variants per train patient plus the originals and an
+# un-augmented val copy to /scratch-shared/scur0088/data/SEGTHOR_aug.
+# Idempotent and deterministic (seeds are derived from the patient name),
+# so it is safe to re-submit.
+# Submit from the project root: sbatch jobs/augment.job
+export PATH="$HOME/.local/bin:$PATH"
+
+uv run python -O /home/scur0088/project/src/preprocessing/augment_offline.py \
+    --sliced-root /scratch-shared/scur0088/data/SEGTHOR \
+    --out-root /scratch-shared/scur0088/data/SEGTHOR_aug \
+    --subset train \
+    --variants 2 \
+    --write-original \
+    --copy-subsets val \
+    --process 20

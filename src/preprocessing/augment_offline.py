@@ -38,6 +38,7 @@ Output (default):
 """
 
 import math
+import shutil
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +121,16 @@ class Args:
     preview: int = 0
     """Save a figure with this many z positions per variant. 0 (the default)
     writes no figures, just the augmented slices."""
+
+    copy_subsets: tuple[str, ...] = ("val",)
+    """Subsets to copy through into out_root unchanged, so the output is a
+    complete dataset on its own. BoxDataset needs a val/ folder to start,
+    and val must stay real (un-augmented) images."""
+
+    process: int = 1
+    """Number of processes for the patient warps. 1 (the default) runs them
+    sequentially; -1 uses all cores. The output is identical either way:
+    each patient is seeded on its own name."""
 
 
 # ---------------------------------------------------------------------------
@@ -527,12 +538,29 @@ def main(args: Args) -> None:
     print(f">> {len(patients)} patient(s) in {args.sliced_root / args.subset}")
     print(f"   {args.variants} variant(s) each -> {args.out_root / args.subset}\n")
 
-    warnings: list[str] = []
-    for patient in patients:
-        warnings += augment_patient(args, patient)
+    if args.process == 1:
+        warnings: list[str] = []
+        for patient in patients:
+            warnings += augment_patient(args, patient)
+    else:
+        from multiprocessing import Pool, cpu_count
+
+        n = cpu_count() if args.process == -1 else args.process
+        with Pool(n) as pool:
+            per_patient = pool.starmap(augment_patient, [(args, p) for p in patients])
+        warnings = [line for sub in per_patient for line in sub]
 
     written = len(patients) * (args.variants + (1 if args.write_original else 0))
     print(f"\n>> wrote {written} pseudo-patients")
+
+    for subset in args.copy_subsets:
+        src = args.sliced_root / subset
+        if not src.is_dir():
+            print(f">> no {subset}/ folder in {args.sliced_root}, skipping the copy")
+            continue
+        dst = args.out_root / subset
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        print(f">> copied {subset} through -> {dst}")
 
     if warnings:
         print(f">> {len(warnings)} warning(s):")

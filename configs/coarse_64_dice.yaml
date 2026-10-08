@@ -1,0 +1,35 @@
+# Coarse location-prior run 2/5: whole volume downsampled to 64^3, dice_ce
+# loss. The dice term matters at 64^3: the esophagus is only a few voxels
+# wide and plain ce collapses it to background.
+paths:
+  data_path: /scratch-shared/scur0088/data
+
+dataset:
+  name: SEGTHOR_aug
+  num_classes: 5
+  coarse: true
+  coarse_size: [64, 64, 64]
+
+model:
+  name: UNet3D
+  is_3d: true
+  kernels: 8
+  factor: 2
+  dropout: 0.01
+
+training:
+  epochs: 100
+  batch_size: 8
+  batches_per_epoch: 20
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: dice_ce
+
+runtime:
+  num_workers: 8
+  amp_dtype: bf16
+
+wandb:
+  project: SEGTHOR-UNet3D-coarse
+  notes: coarse 64^3, dice_ce

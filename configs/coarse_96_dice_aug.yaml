@@ -1,0 +1,37 @@
+# Coarse location-prior run 5/5: whole volume downsampled to 96^3, dice_ce
+# loss, plus online intensity augmentation (noise/gamma/contrast on train).
+paths:
+  data_path: /scratch-shared/scur0088/data
+
+dataset:
+  name: SEGTHOR_aug
+  num_classes: 5
+  coarse: true
+  coarse_size: [96, 96, 96]
+
+model:
+  name: UNet3D
+  is_3d: true
+  kernels: 8
+  factor: 2
+  dropout: 0.01
+
+training:
+  epochs: 100
+  batch_size: 8
+  batches_per_epoch: 20
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: dice_ce
+
+augmentation:
+  enabled: true
+
+runtime:
+  num_workers: 8
+  amp_dtype: bf16
+
+wandb:
+  project: SEGTHOR-UNet3D-coarse
+  notes: coarse 96^3, dice_ce, online intensity augmentation

@@ -92,9 +92,9 @@ class SliceDataset(Dataset):
         if not self.test_mode:
             gt: Tensor = self.gt_transform(Image.open(gt_path))
 
-            _, W, H = img.shape
+            _, H, W = img.shape
             K, _, _ = gt.shape
-            assert gt.shape == (K, W, H)
+            assert gt.shape == (K, H, W)
 
             data_dict["gts"] = gt
 
@@ -225,7 +225,7 @@ class BoxDataset(Dataset):
                 for v, size, full in zip(vox, (d, h, w), vol_shape):
                     s = int(v) - random.randint(0, size - 1)
                     starts.append(
-                        min(max(s, 0), full - size)
+                        min(max(s, 0), max(0, full - size))
                     )  # keep the box inside the volume
                 return tuple(starts)
 
@@ -429,8 +429,9 @@ class CoarseDataset(BoxDataset):
             gt_coarse = F.interpolate(gt_t, size=self.target_size, mode="nearest")
 
             # Squeeze twice to get back proper dimensions
-            item["img_vol"] = (
-                img_coarse.squeeze(0).squeeze(0).numpy().astype(item["img_vol"].dtype)
+            img_np = img_coarse.squeeze(0).squeeze(0).numpy()
+            item["img_vol"] = np.clip(np.round(img_np), 0, 255).astype(
+                item["img_vol"].dtype
             )
             item["gt_cls"] = (
                 gt_coarse.squeeze(0).squeeze(0).numpy().astype(item["gt_cls"].dtype)

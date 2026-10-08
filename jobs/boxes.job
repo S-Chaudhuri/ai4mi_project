@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_boxes
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/%j/out.log
+
+# Single 50-epoch 3D boxes-only run (132x132x128 crops) on SEGTHOR_aug.
+# wandb: SEGTHOR-UNet3D (the default project).
+# Submit from the project root: sbatch jobs/boxes.job
+export PATH="$HOME/.local/bin:$PATH"
+
+uv run python -O /home/scur0088/project/src/train.py \
+    --config /home/scur0088/project/configs/boxes.yaml \
+    --paths.dest /home/scur0088/project/results/segthor_boxes_%j

@@ -41,7 +41,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
-from src.utils.dataset import SliceDataset, BoxDataset
+from src.utils.dataset import SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
@@ -172,16 +172,23 @@ def build_dataloaders(config: Config):
     train_kwargs: dict[str, Any] = {}  # NEW: only for the training set
     val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
     if config.model.is_3d:
-        dataset_cls = BoxDataset
-        val_dataset_cls = BoxDataset  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
-        dataset_kwargs["sub_box_size"] = config.dataset.box_size
         dataset_kwargs["num_classes"] = (
             num_classes  # BoxDataset decodes the quantized GT once per volume
         )
-        train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
-        # val_kwargs["overlap"] = config.val_overlap  # NEW
+        if config.dataset.coarse:
+            # Whole volume downsampled to coarse_size, no sub-boxing. The
+            # model learns an organ-location map to use as a prior for boxes.
+            dataset_cls = CoarseDataset
+            val_dataset_cls = CoarseDataset
+            dataset_kwargs["target_size"] = config.dataset.coarse_size
+        else:
+            dataset_cls = BoxDataset
+            val_dataset_cls = BoxDataset
+            dataset_kwargs["sub_box_size"] = config.dataset.box_size
+            train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
+            # val_kwargs["overlap"] = config.val_overlap  # NEW
     else:
         dataset_cls = SliceDataset
         val_dataset_cls = SliceDataset  # NEW
@@ -414,37 +421,25 @@ def runTraining(config: Config):
     union_val: Tensor = torch.zeros(
         (config.training.epochs, num_classes), device=device
     )
+    # j counts samples seen in the epoch; with the 3D replacement sampler an
+    # epoch holds batches_per_epoch * batch_size samples, which exceeds
+    # len(dataset) for small datasets. Size by the loader, which always
+    # bounds the sample count.
     log_hd95_tra: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(train_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ),
-        device=device,  # type: ignore
+        (config.training.epochs, len(train_loader) * config.training.batch_size, num_classes),
+        device=device,
     )
     log_hd95_val: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(val_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ),
-        device=device,  # type: ignore
+        (config.training.epochs, len(val_loader) * config.training.batch_size, num_classes),
+        device=device,
     )
     log_present_tra: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(train_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ),  # type: ignore
+        (config.training.epochs, len(train_loader) * config.training.batch_size, num_classes),
         dtype=torch.bool,
         device=device,
     )
     log_present_val: Tensor = torch.zeros(
-        (
-            config.training.epochs,
-            len(val_loader.dataset) * config.training.batches_per_epoch,
-            num_classes,
-        ),  # type: ignore
+        (config.training.epochs, len(val_loader) * config.training.batch_size, num_classes),
         dtype=torch.bool,
         device=device,
     )

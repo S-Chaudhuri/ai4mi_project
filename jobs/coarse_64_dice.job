@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH --job-name=coarse_64_dice
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/%j/out.log
+
+# Coarse location-prior run 2/5: 64^3, dice_ce.
+# wandb: SEGTHOR-UNet3D-coarse.
+# Submit from the project root: sbatch jobs/coarse_64_dice.job
+export PATH="$HOME/.local/bin:$PATH"
+
+uv run python -O /home/scur0088/project/src/train.py \
+    --config /home/scur0088/project/configs/coarse_64_dice.yaml \
+    --paths.dest /home/scur0088/project/results/coarse_64_dice_%j

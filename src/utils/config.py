@@ -28,7 +28,7 @@ class DatasetConfig:
     """Which dataset to train on and how it is sampled."""
 
     # Name of the dataset, must match a folder under paths.data_path.
-    name: Literal["TOY2", "SEGTHOR"] = "SEGTHOR"
+    name: str = "SEGTHOR"
 
     # Number of segmentation classes (including background).
     num_classes: int = 5
@@ -47,6 +47,16 @@ class DatasetConfig:
 
     # Probability that a sampled 3D training box contains foreground.
     fg_prob: float = 0.5
+
+    # Use CoarseDataset instead of BoxDataset: every volume is downsampled
+    # to coarse_size and returned whole, instead of random sub-box crops.
+    # The resulting model predicts where the organs are and can serve as a
+    # prior for placing boxes in a later fine-grained run.
+    coarse: bool = False
+
+    # Spatial size (Depth, Height, Width) the volume is downsampled to when
+    # coarse is True.
+    coarse_size: tuple[int, int, int] = (64, 64, 64)
 
 
 @dataclass
@@ -148,9 +158,9 @@ class AugmentationConfig:
 
     Geometric augmentation is done offline, by
     src/preprocessing/augment_offline.py. (Should be in the data already)
-    These are the pointwise transforms that are cheap enough to redraw every 
-    time a sample is loaded. Each is drawn once per sample, so a whole 3D box 
-    gets the same gamma and contrast: the noise alone is drawn per voxel. 
+    These are the pointwise transforms that are cheap enough to redraw every
+    time a sample is loaded. Each is drawn once per sample, so a whole 3D box
+    gets the same gamma and contrast: the noise alone is drawn per voxel.
     Validation images are never augmented (they should be real images).
     """
 

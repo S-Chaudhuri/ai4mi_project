@@ -1,0 +1,38 @@
+# Second 3D boxes-only run (BoxDataset, random 132x132x128 crops) on the
+# augmented complete dataset, with the dice_ce loss. Companion to
+# configs/boxes.yaml (ce).
+# wandb.project is set explicitly: the dataset folder is SEGTHOR_aug, so the
+# auto-default would name the project SEGTHOR_aug-UNet3D instead of the
+# default SEGTHOR-UNet3D.
+paths:
+  data_path: /scratch-shared/scur0088/data
+
+dataset:
+  name: SEGTHOR_aug
+  num_classes: 5
+  box_size: [132, 132, 128]
+  fg_prob: 0.5
+
+model:
+  name: UNet3D
+  is_3d: true
+  kernels: 8
+  factor: 2
+  dropout: 0.01
+
+training:
+  epochs: 50
+  batch_size: 8
+  batches_per_epoch: 20
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: dice_ce
+
+runtime:
+  num_workers: 8
+  amp_dtype: bf16
+
+wandb:
+  project: SEGTHOR-UNet3D
+  notes: boxes-only run on SEGTHOR_aug, dice_ce
