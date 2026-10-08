@@ -1,0 +1,27 @@
+dataset:
+  name: SEGTHOR
+  num_classes: 5
+
+model:
+  name: ENet
+  is_3d: false
+  kernels: 8
+  factor: 2
+  dropout: 0.01
+
+training:
+  epochs: 50
+  batch_size: 8
+  batches_per_epoch: 20
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: ce
+
+runtime:
+  num_workers: 8
+  amp_dtype: bf16
+
+wandb:
+  project: SEGTHOR-ENet
+  notes: just a test to see how 2d still runs
