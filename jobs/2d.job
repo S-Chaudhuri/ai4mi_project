@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=segthor_3d
+#SBATCH --job-name=segthor_2d
 #SBATCH --partition=gpu_a100
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=18
+#SBATCH --cpus-per-task=9
 #SBATCH --time=00:29:00
 #SBATCH --output=logs/%j/out.log
 #SBATCH --constraint=scratch-node
@@ -11,9 +11,5 @@ tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
 
 uv run python -O /home/scur0088/project/src/train.py \
     --config /home/scur0088/project/configs/2d.yaml \
-    --model.name UNet3D \
-    --model.is_3d \
-    --dataset.box_size 132 132 128 \
-    --dataset.fg_prob 0.7 \
     --paths.data_path "$TMPDIR"
     

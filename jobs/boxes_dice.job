@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=segthor_boxes_dice
-#SBATCH --partition=gpu_mig
+#SBATCH --partition=gpu_a100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=04:00:00

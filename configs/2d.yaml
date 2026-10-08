@@ -1,3 +1,6 @@
+paths:
+  data_path: /scratch-shared/scur0088/data
+
 dataset:
   name: SEGTHOR
   num_classes: 5
@@ -7,7 +10,7 @@ model:
   is_3d: false
   kernels: 8
   factor: 2
-  dropout: 0.01
+  dropout: 0.4
 
 training:
   epochs: 50
@@ -16,7 +19,10 @@ training:
   lr: 0.0005
   scheduler: cosine
   mode: full
-  loss: ce
+  loss: dice_ce
+
+augmentation:
+  enabled: true
 
 runtime:
   num_workers: 8

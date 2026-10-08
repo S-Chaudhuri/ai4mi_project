@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=segthor_aug
-#SBATCH --partition=regular
+#SBATCH --partition=rome
 #SBATCH --cpus-per-task=20
 #SBATCH --time=03:00:00
 #SBATCH --output=logs/%j/out.log
