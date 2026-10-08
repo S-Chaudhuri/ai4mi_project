@@ -41,7 +41,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
-from src.utils.dataset import SliceDataset, BoxDataset, CoarseDataset
+from src.utils.dataset import GridBoxDataset, SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
@@ -185,7 +185,7 @@ def build_dataloaders(config: Config):
             dataset_kwargs["target_size"] = config.dataset.coarse_size
         else:
             dataset_cls = BoxDataset
-            val_dataset_cls = BoxDataset
+            val_dataset_cls = GridBoxDataset
             dataset_kwargs["sub_box_size"] = config.dataset.box_size
             train_kwargs["fg_prob"] = config.dataset.fg_prob  # NEW
             # val_kwargs["overlap"] = config.val_overlap  # NEW
@@ -220,6 +220,7 @@ def build_dataloaders(config: Config):
             )
         }
     else:
+        # NOTE why do we set shuffle to false
         train_loader_kwargs = {"shuffle": False}
 
     train_loader = DataLoader(
@@ -278,7 +279,7 @@ def setup(
     )
 
     if config.training.scheduler == "cosine":
-        scheduler: LRScheduler | None = torch.optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=config.training.epochs
         )
     elif config.training.scheduler == "none":
@@ -426,20 +427,36 @@ def runTraining(config: Config):
     # len(dataset) for small datasets. Size by the loader, which always
     # bounds the sample count.
     log_hd95_tra: Tensor = torch.zeros(
-        (config.training.epochs, len(train_loader) * config.training.batch_size, num_classes),
+        (
+            config.training.epochs,
+            len(train_loader) * config.training.batch_size,
+            num_classes,
+        ),
         device=device,
     )
     log_hd95_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader) * config.training.batch_size, num_classes),
+        (
+            config.training.epochs,
+            len(val_loader) * config.training.batch_size,
+            num_classes,
+        ),
         device=device,
     )
     log_present_tra: Tensor = torch.zeros(
-        (config.training.epochs, len(train_loader) * config.training.batch_size, num_classes),
+        (
+            config.training.epochs,
+            len(train_loader) * config.training.batch_size,
+            num_classes,
+        ),
         dtype=torch.bool,
         device=device,
     )
     log_present_val: Tensor = torch.zeros(
-        (config.training.epochs, len(val_loader) * config.training.batch_size, num_classes),
+        (
+            config.training.epochs,
+            len(val_loader) * config.training.batch_size,
+            num_classes,
+        ),
         dtype=torch.bool,
         device=device,
     )

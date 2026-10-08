@@ -20,6 +20,8 @@ training:
   scheduler: cosine
   mode: full
   loss: dice_ce
+  # IDk what a good weight decay is
+  weight_decay: 0.005
 
 augmentation:
   enabled: true
