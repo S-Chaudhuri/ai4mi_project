@@ -53,11 +53,13 @@ class DatasetConfig:
 class ModelConfig:
     """Which network to build and its architecture settings."""
 
-    # Model to use. ShallowNet/ENet are 2D, UNet3D/VNet3D are 3D.
-    name: Literal["ShallowNet", "ENet", "UNet3D", "VNet3D"] = "ENet"
+    # Model to use. ShallowNet/ENet are 2D, UNet3D/VNet3D/ResUNet3D/MedNeXt3D are 3D.
+    name: Literal[
+        "ShallowNet", "ENet", "UNet3D", "VNet3D", "ResUNet3D", "MedNeXt3D"
+    ] = "ENet"
 
     # Toggle 3D volumetric sub-box pipeline. ShallowNet/ENet are 2D,
-    # UNet3D/VNet3D are 3D.
+    # UNet3D/VNet3D/ResUNet3D/MedNeXt3D are 3D.
     is_3d: bool = False
 
     # Number of kernels in the first convolutional layer (doubles per stage).
