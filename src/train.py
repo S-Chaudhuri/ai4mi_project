@@ -46,6 +46,9 @@ from src.utils.augmentations_online import make_img_transform
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
 from src.models.UNet3D import UNet3D
+from src.models.VNet3D import VNet3D
+from src.models.ResUNet3D import ResUNet3D
+from src.models.MedNeXt3D import MedNeXt3D
 from src.utils.utils import (
     Dcm,
     class2one_hot,
@@ -128,11 +131,17 @@ def get_model(config: Config):
 
     # NOTE Gonna rewrite this into a BaseModel which can load any subclass from str
     if config.model.is_3d:
-        if config.model.name != "UNet3D":
+        models_3d = {
+            "UNet3D": UNet3D,
+            "VNet3D": VNet3D,
+            "ResUNet3D": ResUNet3D,
+            "MedNeXt3D": MedNeXt3D,
+        }
+        if config.model.name not in models_3d:
             raise ValueError(
-                f"is_3d=True requires model.name='UNet3D', got {config.model.name!r}"
+                f"is_3d=True requires a 3D model {list(models_3d)}, got {config.model.name!r}"
             )
-        return UNet3D(
+        return models_3d[config.model.name](
             1,
             num_classes,
             kernels=kernels,
