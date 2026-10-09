@@ -73,15 +73,15 @@ def class_index_to_name(index: int):
         case 0:
             return "bg"
         case 1:
-            return "heart"
-        case 2:
-            return "trachea"
-        case 3:
-            return "aorta"
-        case 4:
             return "esophagus"
+        case 2:
+            return "heart"
+        case 3:
+            return "trachea"
+        case 4:
+            return "aorta"
         case _:
-            raise NotImplemented(f"class_index_to_name with index: {index}")
+            raise NotImplementedError(f"class_index_to_name with index: {index}")
 
 
 # Assert utils
@@ -441,4 +441,3 @@ def load_spacing(data_root, png_hw=256, orig_hw=512):
 
 def patient_key(stem):  # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
     return re.sub(r"a\d+$", "", "_".join(stem.split("_")[:2]))
-

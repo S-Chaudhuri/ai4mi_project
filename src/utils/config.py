@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
 import autoroot
@@ -20,7 +21,8 @@ class PathConfig:
 
     # Destination directory to save the results (predictions and weights).
     # If None, defaults to results/<Dataset>/<timestamp>.
-    dest: Optional[Path] = None
+    # Guaranteed to be a path if gotten through get_config
+    results_dir: Optional[Path] = None
 
 
 @dataclass
@@ -252,6 +254,35 @@ class ProfilerConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    """Settings for the 3D evaluation script (src/eval_3D.py).
+
+    Model and dataset selection are shared with training via ModelConfig and
+    DatasetConfig; this holds only the inference/evaluation-specific settings.
+    """
+
+    # Only for after training, if eval is called directly this is ignored
+    enabled: bool = False
+
+    # Checkpoint (state_dict) to load for inference. Required at runtime; pass
+    # --evaluation.weights PATH (or set it in the yaml config). After a
+    # training run, src/train.py main() sets this to the best weights.
+    weights: Optional[Path] = None
+
+    # Data split to evaluate: "train", "val" or "test".
+    split: str = "val"
+
+    # Evaluate a single patient only (e.g. 2 -> Patient_02). None = all patients.
+    patient_id: Optional[int] = None
+
+    # Overlap between sliding inference windows (0.5 = half overlap).
+    overlap: float = 0.5
+
+    # Where the per-patient prediction NIfTIs are written (ITK-SNAP overlay).
+    submission: bool = False
+
+
+@dataclass
 class Config:
     """Top-level training configuration, composed from the sub-configs below."""
 
@@ -266,6 +297,9 @@ class Config:
 
     # Optimization, scheduling and loss settings.
     training: TrainingConfig = field(default_factory=TrainingConfig)
+
+    # 3D evaluation settings (src/eval_3D.py).
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
     # Data-loading and execution settings.
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
@@ -367,5 +401,10 @@ def get_config() -> Config:
     config.wandb.project = config.wandb.project or (
         f"{config.dataset.name}-{config.model.name}"
     )
+
+    config.paths.results_dir = config.paths.results_dir or Path(
+        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
+    )
+    config.paths.results_dir.mkdir(parents=True, exist_ok=True)
 
     return config

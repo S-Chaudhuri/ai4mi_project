@@ -25,7 +25,7 @@
 import dataclasses
 from datetime import datetime
 import warnings
-from typing import Any
+from typing import Any, Optional
 from pathlib import Path
 from pprint import pprint
 import traceback
@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler
 from functools import partial
 import autoroot  # noqa     Do not remove
 
+from src import eval_3D
 from src.utils.config import Config, get_config
 from src.utils.dataset import GridBoxDataset, SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
@@ -382,11 +383,11 @@ def runTraining(config: Config):
 
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
+    result_dir = config.paths.results_dir
+    # Guaranteed by get_config to be a path
+    if result_dir is None:
+        raise
 
-    result_dir = config.paths.dest or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
-    )
-    result_dir.mkdir(parents=True, exist_ok=True)
     device_type = "cuda" if config.training.gpu else "cpu"
 
     profiler: torch.profiler.profile | None = None
@@ -709,7 +710,7 @@ def main():
         tb = traceback.format_exc()
         wandb.log(
             {
-                "exceptions/traceback": wandb.Html(f"<pre>{tb}</pre>", full_html=False),
+                "exceptions/traceback": tb,
             }
         )
         wandb.finish(exit_code=1)
@@ -717,6 +718,11 @@ def main():
         raise  # Re-raise so the traceback is printed and the job exits non zero
 
     wandb.finish()
+
+    if config.evaluation.enabled:
+        config.evaluation.weights = config.paths.results_dir / "bestweights.pt"
+
+        eval_3D.run_eval(config)
 
 
 if __name__ == "__main__":
