@@ -17,3 +17,4 @@ wandb/
 logs/
 .worktrees/
 profiler/
+.DS_Store
