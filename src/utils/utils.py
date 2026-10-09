@@ -29,6 +29,8 @@ from typing import Callable, Iterable, List, Set, Tuple, TypeVar, cast
 import torch
 import numpy as np
 import random
+import pickle
+import re
 from PIL import Image
 from tqdm import tqdm
 from torch import Tensor, einsum
@@ -411,3 +413,13 @@ def deep_update(base_dict: dict, update_dict: dict) -> dict:
         else:
             base_dict[key] = value
     return base_dict
+
+def load_spacing(data_root, png_hw=256, orig_hw=512):
+    """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
+    with open(Path(data_root) / "spacing.pkl", "rb") as f:
+        raw = pickle.load(f)                      # id -> (dx, dy, dz) of the original CT
+    s = orig_hw / png_hw
+    return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
+
+def patient_key(stem):                            # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
+    return re.sub(r"a\d+$", "", "_".join(stem.split("_")[:2]))

@@ -53,6 +53,12 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 
     return list(zip(images, full_labels))
 
+def coord_grid(vol_shape, start, size):
+    """(3, d, h, w) float32 in [0,1]: normalised (z, y, x) index of every voxel in the box."""
+    axes = [np.clip(np.arange(s, s + n, dtype=np.float32) / max(full - 1, 1), 0, 1)
+            for full, s, n in zip(vol_shape, start, size)]
+    z, y, x = np.meshgrid(*axes, indexing="ij")
+    return np.stack([z, y, x])
 
 class SliceDataset(Dataset):
     def __init__(

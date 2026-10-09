@@ -61,6 +61,8 @@ from src.utils.utils import (
     masked_mean,
     hd95_coef,
     save_images,
+    patient_key,
+    load_spacing,
 )
 from src.utils.losses import (
     CrossEntropy,
@@ -540,10 +542,11 @@ def runTraining(config: Config):
                             ).sum()
 
                         if compute_hd95:
+                            spacing_map = load_spacing(config.paths.data_path / config.dataset.name) if config.model.is_3d else None
                             pred_seg = class2one_hot(pred_class, num_classes)
-                            log_hd95[e, j : j + batch_size, :] = hd95_coef(
-                                pred_seg, gt, spacing_mm=data_spacing
-                            )
+                            for b in range(batch_size):
+                                sp = spacing_map[patient_key(data["stems"][b])] if spacing_map else data_spacing
+                                log_hd95[e, j + b, :] = hd95_coef(gt[b:b+1], pred_seg[b:b+1], spacing_mm=sp)[0]
                         log_present[e, j : j + batch_size, :] = (
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
@@ -582,9 +585,13 @@ def runTraining(config: Config):
                     # HD95 and gated dice are only averaged over samples where the class is in the gt
                     present = log_present[e, :j, 1:]
 
+                    # Necessary for gated dice: only average over samples where the class is present in the gt
+                    seen = log_present[e, :j, 1:].any(dim=0)
+                    d = (2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)
+
                     postfix_dict: dict[str, str] = {
                         "Dice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
-                        "GDice": f"{((2 * inter[e, 1:] + 1e-8) / (union[e, 1:] + 1e-8)).mean():05.3f}",
+                        "GDice": f"{d[seen].mean():05.3f}" if seen.any() else "n/a",
                         "Loss": f"{log_loss[e, : i + 1].mean():5.2e}",
                     }
                     if compute_hd95:
