@@ -144,6 +144,10 @@ class RuntimeConfig:
     # reports HD95 every epoch.
     hd95_in_train: bool = False
 
+    # The interval at which hd95 should be calculated, 1 means every, idk what
+    # happens with negative numbers
+    hd95_interval: int = 5
+
     # Mixed-precision autocast dtype on GPU. "bf16" (default) is faster on
     # Hopper, needs no GradScaler and has no fp16 range issues. "fp16" keeps
     # the old behavior (GradScaler enabled, loss computed outside autocast).

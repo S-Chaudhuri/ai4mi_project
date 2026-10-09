@@ -68,6 +68,22 @@ def seed_all(seed: int, gpu: bool = False, cudnn_benchmark: bool = False):
     np.random.seed(seed)
 
 
+def class_index_to_name(index: int):
+    match index:
+        case 0:
+            return "bg"
+        case 1:
+            return "heart"
+        case 2:
+            return "trachea"
+        case 3:
+            return "aorta"
+        case 4:
+            return "esophagus"
+        case _:
+            raise NotImplemented(f"class_index_to_name with index: {index}")
+
+
 # Assert utils
 def uniq(a: Tensor) -> Set:
     return set(torch.unique(a.cpu()).numpy())
@@ -414,12 +430,15 @@ def deep_update(base_dict: dict, update_dict: dict) -> dict:
             base_dict[key] = value
     return base_dict
 
+
 def load_spacing(data_root, png_hw=256, orig_hw=512):
     """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
     with open(Path(data_root) / "spacing.pkl", "rb") as f:
-        raw = pickle.load(f)                      # id -> (dx, dy, dz) of the original CT
+        raw = pickle.load(f)  # id -> (dx, dy, dz) of the original CT
     s = orig_hw / png_hw
     return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
 
-def patient_key(stem):                            # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
+
+def patient_key(stem):  # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
     return re.sub(r"a\d+$", "", "_".join(stem.split("_")[:2]))
+

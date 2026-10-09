@@ -53,6 +53,7 @@ from src.models.MedNeXt3D import MedNeXt3D
 from src.utils.utils import (
     Dcm,
     class2one_hot,
+    class_index_to_name,
     probs2one_hot,
     probs2class,
     seed_all,
@@ -478,6 +479,9 @@ def runTraining(config: Config):
     # NOTE Just need a total rewrite of this, split it up into functions
     # Also not handy bc train and val are in this same loop
     for e in range(config.training.epochs):
+        # Only run hd95 on these intervals, including first epoch to make sure graph looks nice
+        calculate_hd95 = e % config.runtime.hd95_interval == 0
+
         for m in ["train", "val"]:
             match m:
                 case "train":
@@ -524,7 +528,9 @@ def runTraining(config: Config):
                     batch_size = img.shape[0]  # works for (B,C,W,H) and (B,C,D,W,H)
 
                     # HD95 takes seconds per batch. So we only run it on validation or explicitly set
-                    compute_hd95 = m == "val" or config.runtime.hd95_in_train
+                    compute_hd95 = (
+                        m == "val" or config.runtime.hd95_in_train
+                    ) and calculate_hd95
 
                     with torch.autocast(device_type=device_type, dtype=amp_dtype):
                         pred_logits = net(img)
@@ -542,11 +548,23 @@ def runTraining(config: Config):
                             ).sum()
 
                         if compute_hd95:
-                            spacing_map = load_spacing(config.paths.data_path / config.dataset.name) if config.model.is_3d else None
+                            spacing_map = (
+                                load_spacing(
+                                    config.paths.data_path / config.dataset.name
+                                )
+                                if config.model.is_3d
+                                else None
+                            )
                             pred_seg = class2one_hot(pred_class, num_classes)
                             for b in range(batch_size):
-                                sp = spacing_map[patient_key(data["stems"][b])] if spacing_map else data_spacing
-                                log_hd95[e, j + b, :] = hd95_coef(gt[b:b+1], pred_seg[b:b+1], spacing_mm=sp)[0]
+                                sp = (
+                                    spacing_map[patient_key(data["stems"][b])]
+                                    if spacing_map
+                                    else data_spacing
+                                )
+                                log_hd95[e, j + b, :] = hd95_coef(
+                                    gt[b : b + 1], pred_seg[b : b + 1], spacing_mm=sp
+                                )[0]
                         log_present[e, j : j + batch_size, :] = (
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
@@ -600,7 +618,7 @@ def runTraining(config: Config):
                         )
                     if num_classes > 2:
                         postfix_dict |= {
-                            f"Dice-{k}": f"{((2 * inter[e, k] + 1e-8) / (union[e, k] + 1e-8)):05.3f}"
+                            f"Dice-{class_index_to_name(k)}": f"{((2 * inter[e, k] + 1e-8) / (union[e, k] + 1e-8)):05.3f}"
                             for k in range(1, num_classes)
                         }
                     tq_iter.set_postfix(postfix_dict)
@@ -628,19 +646,23 @@ def runTraining(config: Config):
 
         if num_classes > 2:
             for k in range(1, num_classes):
-                metrics[f"train/dice_{k}"] = (
+                class_name = class_index_to_name(k)
+                metrics[f"train/dice_{class_name}"] = (
                     (2 * inter_tra[e, k] + 1e-8) / (union_tra[e, k] + 1e-8)
                 ).item()
-                metrics[f"val/dice_{k}"] = (
+                metrics[f"val/dice_{class_name}"] = (
                     (2 * inter_val[e, k] + 1e-8) / (union_val[e, k] + 1e-8)
                 ).item()
-                if config.runtime.hd95_in_train:
-                    metrics[f"train/hd95_{k}"] = masked_mean(
-                        log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+
+                # Only on correct intervals
+                if calculate_hd95:
+                    if config.runtime.hd95_in_train:
+                        metrics[f"train/hd95_{class_name}"] = masked_mean(
+                            log_hd95_tra[e, :, k], log_present_tra[e, :, k]
+                        ).item()
+                    metrics[f"val/hd95_{class_name}"] = masked_mean(
+                        log_hd95_val[e, :, k], log_present_val[e, :, k]
                     ).item()
-                metrics[f"val/hd95_{k}"] = masked_mean(
-                    log_hd95_val[e, :, k], log_present_val[e, :, k]
-                ).item()
         wandb.log(metrics)
 
         # Scheduler at the end of each epoch
