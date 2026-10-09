@@ -1,4 +1,9 @@
 import argparse
+import math
+import os
+import random
+import re
+import secrets
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
 import autoroot
@@ -308,26 +313,96 @@ def _coerce_value(value, expected):
     return value
 
 
-def instantiate_dataclass(cls, data: dict):
+_SWEEP_SPEC_RE = re.compile(r"^<(\w+)\s+(.+)>$")
+
+
+def parse_sweep_spec(value):
+    """Return (dist, args) if value is a sweep spec like '<loguniform 1e-5 5e-4>'.
+
+    Returns None for everything else, so plain values pass through unchanged.
+    """
+    if not isinstance(value, str):
+        return None
+    match = _SWEEP_SPEC_RE.match(value.strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2).split()
+
+
+def sample_sweep_spec(dist: str, args: list[str], field_name: str, rng):
+    """Draw one concrete value from the distribution named by dist."""
+    if dist == "uniform":
+        if len(args) != 2:
+            raise ValueError(f"{field_name}: <uniform low high> expects 2 args")
+        return rng.uniform(float(args[0]), float(args[1]))
+    if dist in ("loguniform", "uniformexp"):
+        if len(args) != 2:
+            raise ValueError(
+                f"{field_name}: <{dist} low high> expects 2 args"
+            )
+        low, high = float(args[0]), float(args[1])
+        if low <= 0 or high <= 0:
+            raise ValueError(
+                f"{field_name}: <{dist}> requires positive bounds, got {low} {high}"
+            )
+        return math.exp(rng.uniform(math.log(low), math.log(high)))
+    if dist == "intuniform":
+        if len(args) != 2:
+            raise ValueError(f"{field_name}: <intuniform low high> expects 2 args")
+        return rng.randint(int(args[0]), int(args[1]))
+    if dist == "gaussian":
+        if len(args) != 2:
+            raise ValueError(f"{field_name}: <gaussian mean std> expects 2 args")
+        return rng.gauss(float(args[0]), float(args[1]))
+    if dist == "choice":
+        if len(args) < 1:
+            raise ValueError(f"{field_name}: <choice ...> needs at least 1 option")
+        return rng.choice(args)
+    raise ValueError(
+        f"{field_name}: unknown sweep distribution {dist!r} "
+        f"(supported: uniform, loguniform, intuniform, gaussian, choice)"
+    )
+
+
+def instantiate_dataclass(cls, data: dict, rng=None, record=None, path=""):
     if not dataclasses.is_dataclass(cls):
         return data
 
-    field_names = {f.name for f in dataclasses.fields(cls)}
     field_types = get_type_hints(cls)
     kwargs = {}
 
-    for key, value in data.items():
-        # Ignore keys in yaml that don't exist in the dataclass
-        if key not in field_names:
+    # Iterate in dataclass declaration order (not yaml key order) so that
+    # sampling is deterministic no matter how the yaml file is formatted.
+    for f in dataclasses.fields(cls):
+        if f.name not in data:
             continue
+        value = data[f.name]
+        dotted = f"{path}{f.name}"
+        expected_type = _unwrap_optional(field_types[f.name])
 
-        expected_type = _unwrap_optional(field_types[key])
+        if rng is not None and (spec := parse_sweep_spec(value)) is not None:
+            if dataclasses.is_dataclass(expected_type):
+                raise ValueError(
+                    f"{dotted}: sweep specs only apply to scalar fields"
+                )
+            dist, args = spec
+            kwargs[f.name] = _coerce_value(
+                sample_sweep_spec(dist, args, dotted, rng), expected_type
+            )
+            if record is not None:
+                record[dotted] = {
+                    "spec": f"<{dist} {' '.join(args)}>",
+                    "value": kwargs[f.name],
+                }
+            continue
 
         # If the expected field is a nested dataclass, instantiate it recursively
         if dataclasses.is_dataclass(expected_type) and isinstance(value, dict):
-            kwargs[key] = instantiate_dataclass(expected_type, value)
+            kwargs[f.name] = instantiate_dataclass(
+                expected_type, value, rng=rng, record=record, path=f"{dotted}."
+            )
         else:
-            kwargs[key] = _coerce_value(value, expected_type)
+            kwargs[f.name] = _coerce_value(value, expected_type)
 
     return cls(**kwargs)  # type: ignore
 
@@ -345,16 +420,37 @@ def _load_config_file():
     return {}, remaining_argv
 
 
+def _make_sweep_rng():
+    # Seed the sweep rng from the SWEEP_SEED env var when set (e.g.
+    # SWEEP_SEED=$SLURM_ARRAY_TASK_ID), otherwise draw a random one.
+    seed_env = os.environ.get("SWEEP_SEED")
+    if seed_env is not None:
+        return random.Random(int(seed_env)), int(seed_env)
+    seed = secrets.randbits(32)
+    return random.Random(seed), seed
+
+
 def get_config() -> Config:
     yaml_dict, remaining_argv = _load_config_file()
 
     base_inst = Config()
+    sweep_record: dict[str, dict] = {}
+    sweep_seed: int | None = None
     if yaml_dict:
-        base_inst = instantiate_dataclass(Config, yaml_dict)
+        rng, sweep_seed = _make_sweep_rng()
+        base_inst = instantiate_dataclass(Config, yaml_dict, rng=rng, record=sweep_record)
 
     config = tyro.cli(Config, default=base_inst, args=remaining_argv)
     if isinstance(config, dict):
         raise Exception("config was loaded as a dict")
+
+    # Expose the sweep record on the config so callers can log it
+    config.sweep = sweep_record
+    config.sweep_seed = sweep_seed if sweep_record else None
+    if sweep_record:
+        print(f">> Sweep seed: {sweep_seed}")
+        for name, entry in sweep_record.items():
+            print(f">> sweep: {name} = {entry['value']!r} ~ {entry['spec']}")
 
     # Make sure a gpu is available if configured to use
     config.training.gpu = config.training.gpu and torch.cuda.is_available()

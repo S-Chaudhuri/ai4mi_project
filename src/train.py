@@ -663,10 +663,13 @@ def main():
     seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
 
     # Setup wandb
+    wandb_config = dataclasses.asdict(config)
+    if getattr(config, "sweep", None):
+        wandb_config["sweep"] = {"seed": config.sweep_seed, **config.sweep}
     wandb.init(
         entity=config.wandb.entity,
         project=config.wandb.project,
-        config=dataclasses.asdict(config),
+        config=wandb_config,
         dir=config.wandb.dir or (autoroot.root / "results" / "wandb"),
         notes=config.wandb.notes,
     )
