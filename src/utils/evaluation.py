@@ -32,7 +32,7 @@ def to_native_space(pred_dhw: np.ndarray, native_xyz_shape: tuple) -> np.ndarray
 
 def load_native_gt(data_root: Path, patient: str, split_dir="train"):
     """GT in native space + spacing (dx, dy, dz) in mm + affine. Adjust the path to your layout."""
-    nii = nib.load(str(data_root / "segthor_part1" / split_dir / patient / "GT.nii.gz"))
+    nii = nib.load(str(data_root / "segthor_full" / split_dir / patient / "GT.nii.gz"))
     return (
         np.asarray(nii.dataobj).astype(np.uint8),
         tuple(float(z) for z in nii.header.get_zooms()[:3]),
@@ -95,4 +95,3 @@ def write_submission(pred_xyz: np.ndarray, affine, patient: str, out_dir: Path):
         nib.Nifti1Image(pred_xyz.astype(np.uint8), affine),
         str(out_dir / f"{patient}.nii.gz"),
     )
-
