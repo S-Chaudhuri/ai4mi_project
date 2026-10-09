@@ -28,6 +28,7 @@ import warnings
 from typing import Any
 from pathlib import Path
 from pprint import pprint
+import traceback
 
 import torch
 from torch.optim.lr_scheduler import LRScheduler
@@ -674,9 +675,17 @@ def main():
 
     try:
         runTraining(config)
-    except Exception:
+    except:
+        # Log traceback in wandb logs
+        tb = traceback.format_exc()
+        wandb.log(
+            {
+                "exceptions/traceback": wandb.Html(f"<pre>{tb}</pre>", full_html=False),
+            }
+        )
         wandb.finish(exit_code=1)
-        raise  # Re-raise so the traceback is printed and the job exits non-zero
+
+        raise  # Re-raise so the traceback is printed and the job exits non zero
 
     wandb.finish()
 
