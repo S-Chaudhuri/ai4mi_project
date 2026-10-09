@@ -299,7 +299,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
     # 3D evaluation settings (src/eval_3D.py).
-    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    eval: EvaluationConfig = field(default_factory=EvaluationConfig)
 
     # Data-loading and execution settings.
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)

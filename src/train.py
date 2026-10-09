@@ -719,8 +719,8 @@ def main():
 
     wandb.finish()
 
-    if config.evaluation.enabled:
-        config.evaluation.weights = config.paths.results_dir / "bestweights.pt"
+    if config.eval.enabled:
+        config.eval.weights = config.paths.results_dir / "bestweights.pt"
 
         eval_3D.run_eval(config)
 

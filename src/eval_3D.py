@@ -58,7 +58,7 @@ def run_eval(config: Config):
     if not config.model.is_3d:
         raise ValueError("eval_3D requires a 3D model: set --model.is-3d")
 
-    if config.evaluation.weights is None:
+    if config.eval.weights is None:
         raise ValueError(
             "evaluation.weights is required: pass --evaluation.weights PATH"
         )
@@ -69,7 +69,7 @@ def run_eval(config: Config):
     K = config.dataset.num_classes
     net = get_model(config)
     net.load_state_dict(
-        torch.load(config.evaluation.weights, map_location=device, weights_only=True)
+        torch.load(config.eval.weights, map_location=device, weights_only=True)
     )
     net.to(device).eval()
 
@@ -79,16 +79,16 @@ def run_eval(config: Config):
     data_root_dir = config.paths.data_path / config.dataset.name
 
     ds = BoxDataset(
-        config.evaluation.split, data_root_dir, sub_box_size=None, num_classes=K
+        config.eval.split, data_root_dir, sub_box_size=None, num_classes=K
     )  # whole volumes, no transforms
 
     # Raw NIfTIs of both the train and val splits live under segthor_part1/train
     # (slice_segthor.py only reads from train/ and test/), so map the split.
-    raw_split = "test" if config.evaluation.split == "test" else "train"
+    raw_split = "test" if config.eval.split == "test" else "train"
 
     results = {}
     for item in ds.items:
-        patient_id = config.evaluation.patient_id
+        patient_id = config.eval.patient_id
         if patient_id is not None and item["stem"] != f"Patient_{patient_id:02d}":
             continue
         img = torch.from_numpy(item["img_vol"]).float().unsqueeze(0) / 255.0
@@ -96,7 +96,7 @@ def run_eval(config: Config):
             net,
             img,
             config.dataset.box_size,
-            config.evaluation.overlap,
+            config.eval.overlap,
             K,
             config.training.batch_size,
             device,
@@ -111,7 +111,7 @@ def run_eval(config: Config):
         results[item["stem"]] = evaluate_patient(pred_xyz, gt_xyz, spacing)
         print(item["stem"], results[item["stem"]])
 
-        if config.evaluation.submission:
+        if config.eval.submission:
             write_submission(
                 pred_xyz, affine, item["stem"], eval_results_dir / "submission"
             )
