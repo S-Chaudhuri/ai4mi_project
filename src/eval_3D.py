@@ -115,7 +115,9 @@ def run_eval(config: Config):
         pred = postprocess(pred, config.eval.postprocess)
 
         gt_xyz, spacing, affine = load_native_gt(
-            config.paths.data_path, item["stem"], split_dir=raw_split
+            config.paths.data_path / config.dataset.name,
+            item["stem"],
+            split_dir=raw_split,
         )
         pred_xyz = to_native_space(pred, gt_xyz.shape)  # back to native grid
         results[item["stem"]] = evaluate_patient(pred_xyz, gt_xyz, spacing)
