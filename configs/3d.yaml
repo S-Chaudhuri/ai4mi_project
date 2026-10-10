@@ -1,0 +1,40 @@
+paths:
+  data_path: /scratch-shared/scur0088/tars
+
+dataset:
+  name: SEGTHOR_3D_1ch
+  num_classes: 5
+
+model:
+  name: UNet3D
+  is_3d: true
+  kernels: 8
+  factor: 2
+  dropout: 0.4
+
+training:
+  epochs: 50
+  batch_size: 8
+  batches_per_epoch: 100
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: dice_ce
+  # IDk what a good weight decay is
+  weight_decay: 0.005
+  seed: 42
+
+eval:
+  enabled: true
+  submission: true
+
+augmentation:
+  enabled: false
+
+runtime:
+  num_workers: 8
+  amp_dtype: bf16
+
+wandb:
+  project: SEGTHOR-3D
+  notes: First run of 3D models on SEGTHOR dataset. Using UNet3D, ResUNet3D, VNet3D, and MedNeXt3D architectures. Training for 50 epochs with batch size of 8 and learning rate of 0.0005. Using cosine scheduler and dice_ce loss function. Weight decay set to 0.005. Evaluation enabled with submission generation.

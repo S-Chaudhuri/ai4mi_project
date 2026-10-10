@@ -92,16 +92,23 @@ def gt_transform_2d(K, img):
     return img[0]
 
 
+# def img_transform_3d(vol: np.ndarray) -> Tensor:
+#     """
+#     Input:  vol is a uint8 3D numpy array (box or volume) with shape (D, H, W)
+#     Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
+#     """
+#     vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
+#     tensor = torch.from_numpy(vol)
+#     if tensor.ndim == 3:
+#         tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
+#     return tensor
 def img_transform_3d(vol: np.ndarray) -> Tensor:
-    """
-    Input:  vol is a uint8 3D numpy array (box or volume) with shape (D, H, W)
-    Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
-    """
-    vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
-    tensor = torch.from_numpy(vol)
-    if tensor.ndim == 3:
-        tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
-    return tensor
+    """(C, D, H, W) or (D, H, W) -> float (C, D, H, W). Integers are scaled by 255; floats are
+    assumed to be normalised to [0, 1] already."""
+    t = torch.from_numpy(vol.astype(np.float32))
+    if np.issubdtype(vol.dtype, np.integer):
+        t = t / 255.0
+    return t.unsqueeze(0) if t.ndim == 3 else t
 
 
 def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
@@ -180,6 +187,18 @@ def build_dataloaders(config: Config):
     num_classes = config.dataset.num_classes
     data_root_dir = config.paths.data_path / config.dataset.name
 
+    print(f"Dataset root: {data_root_dir}")
+    print(f"Dataset root exists: {data_root_dir.is_dir()}")
+
+    train_dir = data_root_dir / "train"
+    print(f"Training directory: {train_dir}")
+    print(f"Training directory exists: {train_dir.is_dir()}")
+
+    if train_dir.is_dir():
+        patients = sorted(train_dir.glob("Patient_*"))
+        print(f"Patient directories found: {len(patients)}")
+        print(f"First few patients: {patients[:5]}")
+
     dataset_cls: type[Dataset]
     val_dataset_cls: type[Dataset]  # NEW: validation can use another class
     dataset_kwargs: dict[str, Any] = {}
@@ -222,6 +241,7 @@ def build_dataloaders(config: Config):
         **dataset_kwargs,
         **train_kwargs,  # NEW
     )
+    print(f"Training dataset length: {len(train_set)}")
 
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
     train_loader_kwargs: dict[str, Any]

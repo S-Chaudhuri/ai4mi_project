@@ -9,30 +9,62 @@ from src.utils.utils import hausdorff_distance, normalized_surface_distance
 CLASS_NAMES = {1: "esophagus", 2: "heart", 3: "trachea", 4: "aorta"}  # SegTHOR labels
 
 
-def to_native_space(pred_dhw: np.ndarray, native_xyz_shape: tuple) -> np.ndarray:
-    """(D, 256, 256) class map in (z, x, y) order -> (X, Y, Z) at the original CT grid. Nearest neighbour."""
-    X, Y, Z = native_xyz_shape
-    assert pred_dhw.shape[0] == Z, (pred_dhw.shape, native_xyz_shape)
-    up = np.stack(
-        [
-            resize(
-                s,
-                (X, Y),
-                order=0,
-                mode="constant",
-                preserve_range=True,
-                anti_aliasing=False,
-            )
-            for s in pred_dhw
-        ],
-        axis=2,
-    )
-    return up.astype(np.uint8)
+# def to_native_space(pred_dhw: np.ndarray, native_xyz_shape: tuple) -> np.ndarray:
+#     """(D, 256, 256) class map in (z, x, y) order -> (X, Y, Z) at the original CT grid. Nearest neighbour."""
+#     X, Y, Z = native_xyz_shape
+#     assert pred_dhw.shape[0] == Z, (pred_dhw.shape, native_xyz_shape)
+#     up = np.stack(
+#         [
+#             resize(
+#                 s,
+#                 (X, Y),
+#                 order=0,
+#                 mode="constant",
+#                 preserve_range=True,
+#                 anti_aliasing=False,
+#             )
+#             for s in pred_dhw
+#         ],
+#         axis=2,
+#     )
+#     return up.astype(np.uint8)
+
+def to_native_space(pred_zyx: np.ndarray, meta: dict) -> np.ndarray:
+    """(D, hc, wc) class map of the stored, cropped array -> (X, Y, Z) at the original CT grid."""
+    y0, y1, x0, x1 = meta["crop_yx"]
+    Dz, Hs, Ws = meta["resampled_size_zyx"]
+    sz, sy, sx = meta["spacing_zyx"]                       # spacing of the stored array
+    ox, oy, oz = meta["original_spacing_xyz"]
+    X, Y, Z = meta["original_size_xyz"]
+    D, hc, wc = pred_zyx.shape
+    assert D == Dz, (D, Dz)
+    assert abs(hc - (y1 - y0)) <= 1 and abs(wc - (x1 - x0)) <= 1, (pred_zyx.shape, meta["crop_yx"])
+    assert y0 + hc <= Hs and x0 + wc <= Ws
+
+    full = np.zeros((Dz, Hs, Ws), np.uint8)                # undo the crop: pad back to the resampled grid
+    full[:, y0:y0 + hc, x0:x0 + wc] = pred_zyx
+
+    # undo the resampling: nearest neighbour, original voxel -> resampled voxel
+    iz = np.clip(np.rint(np.arange(Z) * oz / sz).astype(int), 0, Dz - 1)
+    iy = np.clip(np.rint(np.arange(Y) * oy / sy).astype(int), 0, Hs - 1)
+    ix = np.clip(np.rint(np.arange(X) * ox / sx).astype(int), 0, Ws - 1)
+    return full[iz][:, iy][:, :, ix].transpose(2, 1, 0)    # (Z,Y,X) -> (X, Y, Z)
 
 
-def load_native_gt(data_root: Path, patient: str, split_dir="train"):
-    """GT in native space + spacing (dx, dy, dz) in mm + affine. Adjust the path to your layout."""
-    nii = nib.load(str(data_root / "segthor_full" / split_dir / patient / "GT.nii.gz"))
+def load_native_gt(data_root, patient, split_dir="train", dataset_name="SegTHOR"):
+    base = Path(data_root) / dataset_name
+    for sd in dict.fromkeys([split_dir, "train", "val", "test"]):   # requested split first
+        matches = sorted((base / sd / patient).glob("GT*.nii*"))      # GT.nii.gz, GT_4label_v6.nii.gz, ...
+        if matches:
+            nii = nib.load(str(matches[0]))
+            break
+    else:
+        have = sorted(p.name for p in base.iterdir()) if base.exists() else "base folder missing"
+        sample = sorted(p.name for p in (base / split_dir).glob("*"))[:5] if (base / split_dir).exists() else "n/a"
+        raise FileNotFoundError(
+            f"No GT*.nii* for {patient} under {base}/(train|val|test)/{patient}/. "
+            f"{base.name} contains: {have}; {split_dir}/ starts with: {sample}"
+        )
     return (
         np.asarray(nii.dataobj).astype(np.uint8),
         tuple(float(z) for z in nii.header.get_zooms()[:3]),

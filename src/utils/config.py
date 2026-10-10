@@ -60,6 +60,8 @@ class DatasetConfig:
     # coarse is True.
     coarse_size: tuple[int, int, int] = (64, 64, 64)
 
+    use_coords: bool = False
+
 
 @dataclass
 class ModelConfig:

@@ -107,60 +107,92 @@ class SliceDataset(Dataset):
         return data_dict
 
 
-def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
-    # 1. Resolve image and ground-truth directories
-    subset_dir = root_dir / subset
-    img_dir = (
-        subset_dir / "img" if (subset_dir / "img").exists() else subset_dir / "images"
-    )
-    gt_dir = subset_dir / "gt" if (subset_dir / "gt").exists() else subset_dir / "masks"
+# def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
+#     # 1. Resolve image and ground-truth directories
+#     subset_dir = root_dir / subset
+#     img_dir = (
+#         subset_dir / "img" if (subset_dir / "img").exists() else subset_dir / "images"
+#     )
+#     gt_dir = subset_dir / "gt" if (subset_dir / "gt").exists() else subset_dir / "masks"
 
-    if not img_dir.exists() or not gt_dir.exists():
-        print(f"Error: Expected image/gt folders not found in {subset_dir}")
+#     if not img_dir.exists() or not gt_dir.exists():
+#         print(f"Error: Expected image/gt folders not found in {subset_dir}")
+#         return []
+
+#     # 2. Group PNG files by Patient ID (e.g., 'Patient_01_042.png' -> key 'Patient_01')
+#     img_groups = defaultdict(list)
+#     gt_groups = defaultdict(list)
+
+#     for img_path in sorted(img_dir.glob("*.png")):
+#         # Extract patient ID prefix (e.g., "Patient_01" from "Patient_01_045.png")
+#         pid = "_".join(img_path.stem.split("_")[:2])
+#         img_groups[pid].append(img_path)
+
+#     for gt_path in sorted(gt_dir.glob("*.png")):
+#         pid = "_".join(gt_path.stem.split("_")[:2])
+#         gt_groups[pid].append(gt_path)
+
+#     # 3. Pair 3D patient volumes
+#     items = []
+#     for pid in sorted(img_groups.keys()):
+#         if pid not in gt_groups:
+#             print(f"[Warning] Skipping {pid}: No matching GT slices found.")
+#             continue
+
+#         img_slices = sorted(img_groups[pid])
+#         gt_slices = sorted(gt_groups[pid])
+
+#         if len(img_slices) != len(gt_slices):
+#             print(
+#                 f"[Warning] Mismatch for {pid}: {len(img_slices)} images vs {len(gt_slices)} GTs."
+#             )
+#             continue
+
+#         items.append({"stem": pid, "images": img_slices, "gts": gt_slices})
+
+#     print(
+#         f"Successfully matched {len(items)} 3D patient volumes between images and GT."
+#     )
+#     return items
+
+def make_3d_dataset(
+    root_dir: Path,
+    subset: str,
+) -> List[Dict[str, Any]]:
+    subset_dir = Path(root_dir) / subset
+
+    if not subset_dir.is_dir():
+        print(f"Error: Dataset directory not found: {subset_dir}")
         return []
 
-    # 2. Group PNG files by Patient ID (e.g., 'Patient_01_042.png' -> key 'Patient_01')
-    img_groups = defaultdict(list)
-    gt_groups = defaultdict(list)
-
-    for img_path in sorted(img_dir.glob("*.png")):
-        # Extract patient ID prefix (e.g., "Patient_01" from "Patient_01_045.png")
-        pid = "_".join(img_path.stem.split("_")[:2])
-        img_groups[pid].append(img_path)
-
-    for gt_path in sorted(gt_dir.glob("*.png")):
-        pid = "_".join(gt_path.stem.split("_")[:2])
-        gt_groups[pid].append(gt_path)
-
-    # 3. Pair 3D patient volumes
     items = []
-    for pid in sorted(img_groups.keys()):
-        if pid not in gt_groups:
-            print(f"[Warning] Skipping {pid}: No matching GT slices found.")
+
+    for patient_dir in sorted(subset_dir.glob("Patient_*")):
+        if not patient_dir.is_dir():
             continue
 
-        img_slices = sorted(img_groups[pid])
-        gt_slices = sorted(gt_groups[pid])
+        img_path = patient_dir / "img.npy"
+        gt_path = patient_dir / "gt.npy"
 
-        if len(img_slices) != len(gt_slices):
-            print(
-                f"[Warning] Mismatch for {pid}: {len(img_slices)} images vs {len(gt_slices)} GTs."
-            )
+        if not img_path.is_file() or not gt_path.is_file():
+            print(f"[Warning] Skipping {patient_dir.name}: missing image or GT")
             continue
 
-        items.append({"stem": pid, "images": img_slices, "gts": gt_slices})
+        items.append({
+            "stem": patient_dir.name,
+            "images": img_path,
+            "gts": gt_path,
+        })
 
     print(
-        f"Successfully matched {len(items)} 3D patient volumes between images and GT."
+        f"Found {len(items)} patient volumes in {subset_dir}"
     )
     return items
-
 
 def load_volume(slice_paths: List[Path]) -> np.ndarray:
     """Stacks 2D PNG slices along axis 0. Output shape: (D, H, W)"""
     slices = [np.array(Image.open(p)) for p in slice_paths]
     return np.stack(slices, axis=0)
-
 
 class BoxDataset(Dataset):
     def __init__(
@@ -187,28 +219,36 @@ class BoxDataset(Dataset):
         if self.debug:
             self.items = self.items[:10]
 
-        # Load every patient volume into RAM once; __getitem__ never touches
-        # disk. The 255-quantized GT is decoded to class indices (int8) here
-        # once per volume, and the foreground voxel coordinates of every class
-        # are precomputed for fast foreground-aware box sampling. __getitem__
-        # then only ever converts the small box.
+        # Load every patient volume into RAM once; __getitem__ never touches disk.
+        # Images are kept channel-first (C, D, H, W); labels are class indices (D, H, W).
         for item in self.items:
-            item["img_vol"] = load_volume(item["images"])
-            gt_vol = load_volume(item["gts"])
-            gt_cls = np.round(
-                gt_vol.astype(np.float32) / (255.0 / (num_classes - 1))
-            ).astype(np.int8)
-            item["gt_cls"] = gt_cls
+            img = np.load(item["images"])
+            if img.ndim == 3:
+                img = img[None]                      # -> (C, D, H, W)
+            gt = np.load(item["gts"])
+            if gt.ndim == 4:
+                gt = gt[0]                           # labels are (D, H, W)
+
+            assert img.shape[1:] == gt.shape, (item["stem"], img.shape, gt.shape)
+            # Catches the old 0/63/126/189/252 label encoding
+            assert gt.max() < num_classes, (item["stem"], np.unique(gt))
+
+            item["img_vol"] = img
+            item["gt_cls"] = gt.astype(np.int8)
             item["fg_coords"] = [
-                np.argwhere(gt_cls == k) for k in range(1, num_classes)
+                np.argwhere(item["gt_cls"] == k) for k in range(1, num_classes)
             ]
             del item["images"], item["gts"]
 
         n_vox = sum(v["img_vol"].size for v in self.items)
         print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
-        print(
-            f"   Loaded all slices into RAM: {n_vox * 2 / 1e6:.0f} MB (img uint8 + gt)."
-        )
+        print(f"   Loaded all volumes into RAM: {n_vox * 2 / 1e6:.0f} MB (img + gt, rough).")
+        if self.items:
+            first = self.items[0]
+            print(
+                f"   Example {first['stem']}: img {first['img_vol'].shape} {first['img_vol'].dtype}, "
+                f"gt {first['gt_cls'].shape}, labels {np.unique(first['gt_cls'])}"
+            )
         if self.sub_box_size:
             print(
                 f"   Sub-box size: {self.sub_box_size}, foreground probability: {self.fg_prob:.2f}"
@@ -271,13 +311,13 @@ class BoxDataset(Dataset):
             return {"images": img, "gts": gt, "stems": item["stem"]}
 
         d, h, w = self.sub_box_size
-        vol_shape = item["img_vol"].shape
+        vol_shape = item["img_vol"].shape[1:]  
 
         ds, hs, ws = self._pick_start(item, vol_shape)
 
         # Crop the small box out of the in-RAM volumes first (cheap uint8/int8
         # views), and only then run the transforms on the box, not the volume.
-        img_box = item["img_vol"][ds : ds + d, hs : hs + h, ws : ws + w]
+        img_box = item["img_vol"][:, ds : ds + d, hs : hs + h, ws : ws + w]
         gt_box = item["gt_cls"][ds : ds + d, hs : hs + h, ws : ws + w]
 
         img = (
@@ -343,7 +383,7 @@ class GridBoxDataset(BoxDataset):
         # (patient index, depth start, height start, width start) for every box
         self.boxes: List[Tuple[int, int, int, int]] = []
         for pi, item in enumerate(self.items):
-            D, H_img, W_img = item["img_vol"].shape
+            _, D, H_img, W_img = item["img_vol"].shape       # always (C, D, H, W) now
             for ds in window_starts(D, d, step[0]):
                 for hs in window_starts(H_img, h, step[1]):
                     for ws in window_starts(W_img, w, step[2]):
@@ -362,7 +402,7 @@ class GridBoxDataset(BoxDataset):
         d, h, w = self.sub_box_size
 
         # Crop the box from the in-RAM volumes (copy so it is contiguous)
-        img_np = item["img_vol"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
+        img_np = item["img_vol"][:, ds : ds + d, hs : hs + h, ws : ws + w].copy()
         gt_np = item["gt_cls"][ds : ds + d, hs : hs + h, ws : ws + w].copy()
 
         img = (
@@ -426,7 +466,7 @@ class CoarseDataset(BoxDataset):
         # Pre-compute the coarse versions
         for item in self.items:
             # (1, 1, D, H, W) for F.interpolate
-            img_t = torch.from_numpy(item["img_vol"]).unsqueeze(0).unsqueeze(0).float()
+            img_t = torch.from_numpy(item["img_vol"]).unsqueeze(0).float()
             gt_t = torch.from_numpy(item["gt_cls"]).unsqueeze(0).unsqueeze(0).float()
 
             img_coarse = F.interpolate(
@@ -435,7 +475,7 @@ class CoarseDataset(BoxDataset):
             gt_coarse = F.interpolate(gt_t, size=self.target_size, mode="nearest")
 
             # Squeeze twice to get back proper dimensions
-            img_np = img_coarse.squeeze(0).squeeze(0).numpy()
+            img_np = img_coarse.squeeze(0).numpy()
             item["img_vol"] = np.clip(np.round(img_np), 0, 255).astype(
                 item["img_vol"].dtype
             )
