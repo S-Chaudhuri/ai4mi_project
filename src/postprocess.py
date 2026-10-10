@@ -36,6 +36,40 @@ from scipy import ndimage
 SINGLE_COMPONENT: tuple[int, ...] = (2, 3, 4)
 
 
+def remove_small_esophagus_components(
+    image: sitk.Image,
+    min_volume_mm3: float = 500.0,
+) -> sitk.Image:
+    """Filter esophagus components; preserve other organs and the largest component."""
+    esophagus = sitk.Cast(image == 1, sitk.sitkUInt8)
+
+    # True selects 26-connectivity for a 3D image.
+    components = sitk.ConnectedComponent(esophagus, True)
+
+    statistics = sitk.LabelShapeStatisticsImageFilter()
+    statistics.Execute(components)
+    labels = statistics.GetLabels()
+
+    if not labels:
+        return sitk.Image(image)
+
+    largest = max(labels, key=statistics.GetNumberOfPixels)
+
+    keep = sitk.Image(image.GetSize(), sitk.sitkUInt8)
+    keep.CopyInformation(image)
+
+    for label in labels:
+        if (
+            statistics.GetPhysicalSize(label) >= min_volume_mm3
+            or label == largest
+        ):
+            keep = keep | sitk.Cast(components == label, sitk.sitkUInt8)
+
+    # Retain all non-esophagus voxels and accepted esophagus components.
+    retain = sitk.Cast(image != 1, sitk.sitkUInt8) | keep
+    return sitk.Mask(image, retain)
+
+
 def keep_largest_component(
     pred: np.ndarray, classes=SINGLE_COMPONENT, connectivity: int = 6
 ) -> np.ndarray:
