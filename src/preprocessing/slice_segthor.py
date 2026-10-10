@@ -29,13 +29,16 @@ import warnings
 from pathlib import Path
 from functools import partial
 from multiprocessing import Pool, cpu_count
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+import autoroot  # noqa     Do not remove, puts the project root on sys.path
 import numpy as np
 import nibabel as nib
 from skimage.io import imsave
 from skimage.transform import resize
 from tqdm import tqdm
+
+from src.preprocessing.hu_window_to_3channel import apply_window
 
 
 def norm_arr(img: np.ndarray) -> np.ndarray:
@@ -87,6 +90,7 @@ def slice_patient(
     source_path: Path,
     shape: tuple[int, int],
     test_mode: bool = False,
+    hu_window: Optional[tuple[float, float]] = None,
 ) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
@@ -113,7 +117,15 @@ def slice_patient(
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    # Either a fixed HU window (same contrast for every patient) or the
+    # original per-volume min-max, which squeezes soft tissue into a few grey
+    # levels when a scan contains metal or very dense bone
+    norm_ct: np.ndarray
+    if hu_window is not None:
+        norm_ct = np.round(255 * apply_window(ct.astype(np.float32), *hu_window))
+        norm_ct = norm_ct.astype(np.uint8)
+    else:
+        norm_ct = norm_arr(ct)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -203,6 +215,7 @@ def main(args: argparse.Namespace):
             source_path=src_path,
             shape=tuple(args.shape),
             test_mode=mode == "test",
+            hu_window=tuple(args.hu_window) if args.hu_window else None,
         )
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm(
@@ -238,6 +251,15 @@ def get_args() -> argparse.Namespace:
         type=int,
         default=25,
         help="Number of retained patient for the validation data",
+    )
+    parser.add_argument(
+        "--hu_window",
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=("CENTER", "WIDTH"),
+        help="Clip the CT to this HU window (e.g. 40 400 for soft tissue) "
+        "instead of the per-volume min-max normalization",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--fold", type=int, default=0)

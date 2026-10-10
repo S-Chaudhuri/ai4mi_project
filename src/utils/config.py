@@ -28,7 +28,12 @@ class DatasetConfig:
     """Which dataset to train on and how it is sampled."""
 
     # Name of the dataset, must match a folder under paths.data_path.
-    name: Literal["TOY2", "SEGTHOR"] = "SEGTHOR"
+    # SEGTHOR_3D_* are the .npy volumes written by preprocess_3d.py.
+    name: Literal["TOY2", "SEGTHOR", "SEGTHOR_3D_1ch", "SEGTHOR_3D_3ch"] = "SEGTHOR"
+
+    # On-disk format for the 3D pipeline: "png" stacks the sliced PNGs
+    # (BoxDataset), "npy" reads preprocess_3d.py's volumes (NpyBoxDataset).
+    format: Literal["png", "npy"] = "png"
 
     # Number of segmentation classes (including background).
     num_classes: int = 5
@@ -61,6 +66,9 @@ class ModelConfig:
     # Toggle 3D volumetric sub-box pipeline. ShallowNet/ENet are 2D,
     # UNet3D/VNet3D/ResUNet3D/MedNeXt3D are 3D.
     is_3d: bool = False
+
+    # Input channels: 1, or 3 for SEGTHOR_3D_3ch (one per HU window).
+    in_channels: int = 1
 
     # Number of kernels in the first convolutional layer (doubles per stage).
     kernels: int = 8

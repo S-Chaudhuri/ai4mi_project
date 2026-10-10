@@ -41,7 +41,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src.utils.config import Config, get_config
-from src.utils.dataset import SliceDataset, BoxDataset
+from src.utils.dataset import SliceDataset, BoxDataset, NpyBoxDataset
 from src.models.ShallowNet import shallowCNN
 from src.models.ENet import ENet
 from src.models.UNet3D import UNet3D
@@ -148,7 +148,7 @@ def get_model(config: Config):
                 f"is_3d=True requires a 3D model {list(models_3d)}, got {config.model.name!r}"
             )
         return models_3d[config.model.name](
-            1,
+            config.model.in_channels,
             num_classes,
             kernels=kernels,
             factor=factor,
@@ -187,8 +187,9 @@ def build_dataloaders(config: Config):
     train_kwargs: dict[str, Any] = {}  # NEW: only for the training set
     val_kwargs: dict[str, Any] = {}  # NEW: only for the validation set
     if config.model.is_3d:
-        dataset_cls = BoxDataset
-        val_dataset_cls = BoxDataset  # NEW: deterministic grid of boxes
+        # "npy": the volumes from preprocess_3d.py (HU windows, real spacing)
+        dataset_cls = NpyBoxDataset if config.dataset.format == "npy" else BoxDataset
+        val_dataset_cls = dataset_cls  # NEW: deterministic grid of boxes
         img_transform = img_transform_3d
         gt_transform = partial(gt_transform_3d, num_classes)
         dataset_kwargs["sub_box_size"] = config.dataset.box_size
@@ -292,6 +293,13 @@ def setup(
 
     train_loader, val_loader = build_dataloaders(config)
 
+    data_channels = getattr(train_loader.dataset, "in_channels", 1)
+    if data_channels != config.model.in_channels:
+        raise ValueError(
+            f"{config.dataset.name} has {data_channels} channel(s) but "
+            f"model.in_channels is {config.model.in_channels}"
+        )
+
     return (net, optimizer, scheduler, device, train_loader, val_loader)
 
 
@@ -300,7 +308,7 @@ def get_loss_func(config: Config):
         idk = list(
             range(config.dataset.num_classes)
         )  # Supervise both background and foreground
-    elif config.training.mode == "partial" and config.dataset.name == "SEGTHOR":
+    elif config.training.mode == "partial" and config.dataset.name.startswith("SEGTHOR"):
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
         raise ValueError(config.training.mode, config.dataset.name)
@@ -371,7 +379,11 @@ def runTraining(config: Config):
     net, optimizer, scheduler, device, train_loader, val_loader = setup(config)
 
     num_classes = config.dataset.num_classes
-    data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
+    # Real voxel spacing (mm) when the dataset knows it (NpyBoxDataset), so
+    # HD95 is in mm; otherwise voxels
+    data_spacing = getattr(train_loader.dataset, "spacing", None) or (
+        (1, 1, 1) if config.model.is_3d else (1, 1)
+    )
 
     result_dir = config.paths.dest or Path(
         f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"

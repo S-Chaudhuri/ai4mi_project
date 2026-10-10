@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 from pathlib import Path
+import json
 import random
 import torch
 from torch import Tensor
@@ -293,6 +294,106 @@ class BoxDataset(Dataset):
         assert tuple(img.shape[1:]) == tuple(self.sub_box_size), (
             f"Sub-box shape {tuple(img.shape[1:])} does not match expected {tuple(self.sub_box_size)}"
         )
+
+        return {"images": img, "gts": gt, "stems": item["stem"]}
+
+
+class NpyBoxDataset(BoxDataset):
+    """BoxDataset for the volumes written by src/preprocessing/preprocess_3d.py:
+    one folder per patient with img.npy (C, D, H, W) uint8, gt.npy (D, H, W)
+    class indices and meta.json. Box sampling and padding are BoxDataset's;
+    only the loading and the channel axis differ."""
+
+    def __init__(
+        self,
+        subset: str,
+        root_dir: Path,
+        img_transform=None,
+        gt_transform=None,
+        sub_box_size: Optional[Tuple[int, int, int]] = None,
+        num_classes: int = 5,
+        fg_prob: float = 0.5,
+        debug: bool = False,
+    ):
+        self.root_dir = Path(root_dir)
+        self.subset = subset
+        self.img_transform = img_transform
+        self.gt_transform = gt_transform
+        self.sub_box_size = sub_box_size
+        self.num_classes = num_classes
+        self.fg_prob = fg_prob
+        self.debug = debug
+
+        patient_dirs = sorted(p.parent for p in (self.root_dir / subset).glob("*/img.npy"))
+        if not patient_dirs:
+            raise FileNotFoundError(
+                f"No */img.npy in {self.root_dir / subset} -- run preprocess_3d.py first"
+            )
+        if self.debug:
+            patient_dirs = patient_dirs[:10]
+
+        # Memory-mapped: the volumes stay on disk and only the sampled boxes
+        # are read, so RAM use doesn't grow with the dataset (the 3-channel
+        # augmented set is ~5 GB). The OS page cache keeps hot volumes fast.
+        self.items: List[Dict[str, Any]] = []
+        for pdir in patient_dirs:
+            img_vol = np.load(pdir / "img.npy", mmap_mode="r")
+            gt_cls = np.load(pdir / "gt.npy", mmap_mode="r")
+            meta = json.loads((pdir / "meta.json").read_text())
+            assert img_vol.shape[1:] == gt_cls.shape, pdir
+            gt_full = np.asarray(gt_cls)  # read once for the foreground coordinates
+            self.items.append(
+                {
+                    "stem": pdir.name,
+                    "img_vol": img_vol,
+                    "gt_cls": gt_cls,
+                    "meta": meta,
+                    # int16: every axis is < 32768 voxels, 4x smaller than argwhere's int64
+                    "fg_coords": [
+                        np.argwhere(gt_full == k).astype(np.int16)
+                        for k in range(1, num_classes)
+                    ],
+                }
+            )
+
+        channels = {it["img_vol"].shape[0] for it in self.items}
+        assert len(channels) == 1, f"Mixed channel counts {channels} in {self.root_dir}"
+        self.in_channels: int = channels.pop()
+        # Voxel spacing in mm, in the (D, H, W) order of the volumes
+        self.spacing: tuple[float, float, float] = tuple(self.items[0]["meta"]["spacing_zyx"])
+
+        n_bytes = sum(it["img_vol"].nbytes + it["gt_cls"].nbytes for it in self.items)
+        print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
+        print(
+            f"   {self.in_channels} channel(s), spacing {self.spacing} mm, "
+            f"{n_bytes / 1e6:.0f} MB memory-mapped from disk"
+        )
+
+    def __getitem__(self, idx: int) -> dict:
+        item = self.items[idx]
+        img_vol, gt_vol = item["img_vol"], item["gt_cls"]
+
+        if self.sub_box_size is not None:
+            d, h, w = self.sub_box_size
+            ds, hs, ws = self._pick_start(item, gt_vol.shape)
+            img_vol = img_vol[:, ds : ds + d, hs : hs + h, ws : ws + w]
+            gt_vol = gt_vol[ds : ds + d, hs : hs + h, ws : ws + w]
+
+        img = (
+            self.img_transform(np.ascontiguousarray(img_vol))
+            if self.img_transform
+            else torch.from_numpy(np.ascontiguousarray(img_vol))
+        )
+        gt = (
+            self.gt_transform(gt_vol)
+            if self.gt_transform
+            else torch.from_numpy(gt_vol.astype(np.int64, copy=False))
+        )
+
+        if self.sub_box_size is not None:
+            if img.shape[1:] != tuple(self.sub_box_size):
+                img, gt = self._pad_to_box(img, gt)
+            assert tuple(img.shape[1:]) == tuple(self.sub_box_size), tuple(img.shape)
 
         return {"images": img, "gts": gt, "stems": item["stem"]}
 
