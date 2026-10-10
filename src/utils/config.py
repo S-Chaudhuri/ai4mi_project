@@ -281,6 +281,11 @@ class EvaluationConfig:
     # Where the per-patient prediction NIfTIs are written (ITK-SNAP overlay).
     submission: bool = False
 
+    # Postprocessing steps from src/postprocess.py, applied in order before
+    # both the metrics and the submission NIfTIs (e.g. --eval.postprocess lcc).
+    # Empty = raw predictions.
+    postprocess: tuple[str, ...] = ()
+
 
 @dataclass
 class Config:

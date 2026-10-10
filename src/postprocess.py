@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 
-"""Largest-connected-component (LCC) postprocessing for SegTHOR predictions.
+"""Postprocessing for SegTHOR predictions.
 
-The heart, trachea and aorta are each one connected structure, so any extra
-component the model predicts for them is a false positive. Those stray blobs
-barely move the Dice but dominate the Hausdorff distances (a single voxel far
-away sets the HD). For each of those organs this keeps the largest component
-and sets the others to background.
+Every method is a function `label map -> label map`, registered by name in
+POSTPROCESSING. `postprocess(pred, steps)` applies the named steps in order,
+so callers (src/eval_3D.py, this script's CLI) never need to change when a
+method is added: write the function, add one line to POSTPROCESSING.
 
-The esophagus is left alone by default: on some slices it is legitimately
-split (or partly missed), and keeping only its largest piece would delete
-true positives.
+Label maps: 0 = background, 1 = esophagus, 2 = heart, 3 = trachea, 4 = aorta.
 
-Works on label maps (0 = background, 1 = esophagus, 2 = heart, 3 = trachea,
-4 = aorta), on a single NIfTI file or on every .nii/.nii.gz in a folder. The
-geometry (spacing, origin, direction) of each file is kept.
+Methods:
+    lcc     Largest connected component (6-connectivity) of the heart, trachea
+            and aorta. Each is one connected structure, so any extra
+            component is a false positive. Those stray blobs barely move the
+            Dice but dominate the Hausdorff distances (a single voxel far away
+            sets the HD). The esophagus is left alone: on some slices it is
+            legitimately split (or partly missed), and keeping only its
+            largest piece would delete true positives.
+    lcc26   Same, with 26-connectivity (also edges and corners).
 
 Usage:
-    # a folder of predictions
-    python src/postprocess.py --src results/run/pred --dest results/run/pred_lcc
+    # a folder of prediction NIfTIs (geometry is kept)
+    python src/postprocess.py --src results/run/pred --dest results/run/pred_pp --steps lcc
 
-    # one file, choosing the organs and 26-connectivity
-    python src/postprocess.py --src Patient_01.nii.gz --dest Patient_01_lcc.nii.gz \
-        --classes 2 3 4 --connectivity 26
+    # during evaluation
+    python src/eval_3D.py ... --eval.postprocess lcc
 """
 
 import argparse
+from functools import partial
 from pathlib import Path
+from typing import Callable, Sequence
 
 import numpy as np
 import SimpleITK as sitk
@@ -55,18 +59,37 @@ def keep_largest_component(
     return out
 
 
-def postprocess_file(src: Path, dest: Path, classes, connectivity: int) -> dict[int, int]:
-    """Apply LCC to one NIfTI label map. Returns voxels removed per class."""
+# name -> method. To add a method: write a `pred -> pred` function above and
+# register it here; it is then available everywhere as a step name.
+POSTPROCESSING: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "lcc": keep_largest_component,
+    "lcc26": partial(keep_largest_component, connectivity=26),
+}
+
+
+def postprocess(pred: np.ndarray, steps: Sequence[str]) -> np.ndarray:
+    """Apply the named postprocessing steps to a label map, in order."""
+    unknown = [s for s in steps if s not in POSTPROCESSING]
+    if unknown:
+        raise ValueError(f"Unknown postprocessing {unknown}, available: {list(POSTPROCESSING)}")
+    for step in steps:
+        pred = POSTPROCESSING[step](pred)
+    return pred
+
+
+def postprocess_file(src: Path, dest: Path, steps: Sequence[str]) -> dict[int, int]:
+    """Apply the steps to one NIfTI label map, keeping its geometry.
+    Returns the number of voxels each class lost."""
     img = sitk.ReadImage(str(src))
     pred = sitk.GetArrayFromImage(img)
-    out = keep_largest_component(pred, classes, connectivity)
+    out = postprocess(pred, steps)
 
     out_img = sitk.GetImageFromArray(out.astype(pred.dtype))
     out_img.CopyInformation(img)
     dest.parent.mkdir(parents=True, exist_ok=True)
     sitk.WriteImage(out_img, str(dest))
 
-    return {k: int(((pred == k) & (out != k)).sum()) for k in classes}
+    return {int(k): int(((pred == k) & (out != k)).sum()) for k in np.unique(pred) if k != 0}
 
 
 def main(args: argparse.Namespace) -> None:
@@ -79,22 +102,21 @@ def main(args: argparse.Namespace) -> None:
     if not pairs:
         raise SystemExit(f"No .nii/.nii.gz files in {src}")
 
-    print(f">> LCC on classes {tuple(args.classes)} ({args.connectivity}-connectivity), {len(pairs)} file(s)")
+    print(f">> Postprocessing {args.steps} on {len(pairs)} file(s)")
     for s, d in pairs:
-        removed = postprocess_file(s, d, tuple(args.classes), args.connectivity)
+        removed = postprocess_file(s, d, args.steps)
         print(f"  {s.name}: removed " + ", ".join(f"class {k}: {v} vox" for k, v in removed.items()))
     print(f">> wrote {dest}")
 
 
 def get_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Largest-connected-component postprocessing")
+    parser = argparse.ArgumentParser(description="Postprocessing for SegTHOR predictions")
     parser.add_argument("--src", required=True, help="Prediction .nii.gz file or folder")
     parser.add_argument("--dest", required=True, help="Output file or folder")
     parser.add_argument(
-        "--classes", type=int, nargs="+", default=list(SINGLE_COMPONENT),
-        help="Labels to reduce to their largest component (default: heart, trachea, aorta)",
+        "--steps", nargs="+", default=["lcc"], choices=list(POSTPROCESSING),
+        help="Postprocessing steps, applied in order",
     )
-    parser.add_argument("--connectivity", type=int, choices=[6, 26], default=6)
     return parser.parse_args()
 
 

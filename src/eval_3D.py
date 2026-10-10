@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from src.postprocess import POSTPROCESSING, postprocess
 from src.train import get_model
 from src.utils.config import Config
 from src.utils.dataset import BoxDataset, window_starts
@@ -63,6 +64,13 @@ def run_eval(config: Config):
             "evaluation.weights is required: pass --evaluation.weights PATH"
         )
 
+    # Fail before inference, not after the first patient
+    unknown = [s for s in config.eval.postprocess if s not in POSTPROCESSING]
+    if unknown:
+        raise ValueError(
+            f"Unknown --eval.postprocess {unknown}, available: {list(POSTPROCESSING)}"
+        )
+
     device = torch.device(
         "cuda" if config.training.gpu and torch.cuda.is_available() else "cpu"
     )
@@ -103,6 +111,8 @@ def run_eval(config: Config):
             config.model.temperature,
         )
         pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)  # (D, H, W)
+        # Before the metrics and the submission, so both use the same prediction
+        pred = postprocess(pred, config.eval.postprocess)
 
         gt_xyz, spacing, affine = load_native_gt(
             config.paths.data_path, item["stem"], split_dir=raw_split
