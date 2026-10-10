@@ -168,7 +168,7 @@ def get_model(config: Config):
             factor=factor,
             dropoutRate=config.model.dropout,
         )
-    elif config.model.name == "shallowCNN":
+    elif config.model.name == "ShallowNet":  # the name config.model.name accepts
         return shallowCNN(
             1,
             num_classes,
@@ -242,6 +242,9 @@ def build_dataloaders(config: Config):
         val_dataset_cls = SliceDataset  # NEW
         img_transform = img_transform_2d
         gt_transform = partial(gt_transform_2d, num_classes)
+
+    # Original patients only (no offline-augmented copies), training set only
+    train_kwargs["skip_augmented"] = config.dataset.skip_augmented
 
     # Online intensity augmentation wraps the image transform, so only the
     # training set sees it; val_set below keeps the plain one.

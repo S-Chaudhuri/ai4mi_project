@@ -22,6 +22,7 @@
 
 from pathlib import Path
 import random
+import re
 import torch
 from torch import Tensor
 from PIL import Image
@@ -32,7 +33,13 @@ from collections import defaultdict
 import torch.nn.functional as F
 
 
-def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
+def is_offline_augmented(stem: str) -> bool:
+    """True for the copies written by augment_offline.py / preprocess_3d.py:
+    "Patient_02a1" (3D folder) or "Patient_02a1_0042" (2D slice)."""
+    return re.match(r"^Patient_\d+a\d+", stem) is not None
+
+
+def make_dataset(root, subset, skip_augmented=False) -> list[tuple[Path, Path | None]]:
     assert subset in ["train", "val", "test"]
 
     root = Path(root)
@@ -51,7 +58,10 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
     if len(images) != len(full_labels):
         raise ValueError("Not the same number of images and labels in dataset")
 
-    return list(zip(images, full_labels))
+    pairs = list(zip(images, full_labels))
+    if skip_augmented:  # original patients only, e.g. for baselines
+        pairs = [(i, g) for i, g in pairs if not is_offline_augmented(i.stem)]
+    return pairs
 
 def coord_grid(vol_shape, start, size):
     """(3, d, h, w) float32 in [0,1]: normalised (z, y, x) index of every voxel in the box."""
@@ -70,6 +80,7 @@ class SliceDataset(Dataset):
         augment=False,
         equalize=False,
         debug=False,
+        skip_augmented=False,
     ):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
@@ -79,7 +90,7 @@ class SliceDataset(Dataset):
 
         self.test_mode: bool = subset == "test"
 
-        self.files = make_dataset(root_dir, subset)
+        self.files = make_dataset(root_dir, subset, skip_augmented)
         if debug:
             self.files = self.files[:10]
 
@@ -158,6 +169,7 @@ class SliceDataset(Dataset):
 def make_3d_dataset(
     root_dir: Path,
     subset: str,
+    skip_augmented: bool = False,
 ) -> List[Dict[str, Any]]:
     subset_dir = Path(root_dir) / subset
 
@@ -170,6 +182,8 @@ def make_3d_dataset(
     for patient_dir in sorted(subset_dir.glob("Patient_*")):
         if not patient_dir.is_dir():
             continue
+        if skip_augmented and is_offline_augmented(patient_dir.name):
+            continue  # original patients only, e.g. for baselines
 
         img_path = patient_dir / "img.npy"
         gt_path = patient_dir / "gt.npy"
@@ -205,6 +219,7 @@ class BoxDataset(Dataset):
         num_classes: int = 5,
         fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
+        skip_augmented: bool = False,
     ):
         self.root_dir = Path(root_dir)
         self.subset = subset
@@ -215,7 +230,7 @@ class BoxDataset(Dataset):
         self.fg_prob = fg_prob
         self.debug = debug
 
-        self.items = make_3d_dataset(self.root_dir, self.subset)
+        self.items = make_3d_dataset(self.root_dir, self.subset, skip_augmented)
         if self.debug:
             self.items = self.items[:10]
 
@@ -450,6 +465,7 @@ class CoarseDataset(BoxDataset):
         target_size: Tuple[int, int, int] = (64, 64, 64),
         num_classes: int = 5,
         debug: bool = False,
+        skip_augmented: bool = False,
     ):
         super().__init__(
             subset=subset,
@@ -460,6 +476,7 @@ class CoarseDataset(BoxDataset):
             num_classes=num_classes,
             fg_prob=0.0,
             debug=debug,
+            skip_augmented=skip_augmented,
         )
         self.target_size = target_size
 

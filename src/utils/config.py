@@ -66,6 +66,11 @@ class DatasetConfig:
 
     use_coords: bool = False
 
+    # Train on the original patients only: leave out the offline-augmented
+    # copies (Patient_XXa1, Patient_XXa2, ...) of the training set, e.g. for
+    # baselines. Validation has no augmented copies either way.
+    skip_augmented: bool = False
+
 
 @dataclass
 class ModelConfig:

@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_2d
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/%x/%j/out.log
+#SBATCH --constraint=scratch-node
+
+# 2D training on the HU-windowed PNG slices (SEGTHOR_2D.tar, same 35/5
+# patient split as the 3D .npy datasets), configs/2d.yaml.
+# The model is the first argument; anything after it goes to train.py.
+# -J sets the job name, which is also the log folder (logs/<name>/<jobid>/).
+#
+#   sbatch -J ENet       jobs/2d_png.job ENet
+#   sbatch -J ShallowNet jobs/2d_png.job ShallowNet
+#
+# Baseline (original patients only, no augmentation):
+#
+#   sbatch -J ENet_base jobs/2d_png.job ENet --dataset.skip_augmented --augmentation.no-enabled
+
+MODEL=${1:-ENet}
+shift
+
+# The tar unpacks to SEGTHOR/ (dataset.name in configs/2d.yaml)
+tar -xf /scratch-shared/scur0088/tars/SEGTHOR_2D.tar -C "$TMPDIR"
+
+export PATH="$HOME/.local/bin:$PATH"
+cd /home/scur0088/project
+
+# Run python with -O to turn off asserts
+uv run python -O src/train.py \
+  --config configs/2d.yaml \
+  --paths.data_path "$TMPDIR" \
+  --model.name "$MODEL" \
+  "$@"
