@@ -132,12 +132,6 @@ def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
 
 
 def setup_threads(config: Config) -> None:
-    """Size the main process's torch thread pool for the node.
-
-    On Snellius each task is pinned to its cores, so the defaults (all
-    visible cores, per DataLoader worker process on top) oversubscribe badly.
-    interop must be set before any parallel op runs, hence first thing in main.
-    """
     n = config.runtime.num_threads
     if n <= 0:
         env = os.environ.get("SLURM_CPUS_PER_TASK")

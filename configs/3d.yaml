@@ -1,0 +1,34 @@
+dataset:
+  name: SEGTHOR
+  num_classes: 5
+
+model:
+  name: UNet3D
+  is_3d: true
+  kernels: 8
+  factor: 2
+  dropout: 0.4
+
+training:
+  epochs: 50
+  batch_size: 8
+  batches_per_epoch: 20
+  lr: 0.0005
+  scheduler: cosine
+  mode: full
+  loss: dice_ce
+  # IDk what a good weight decay is
+  weight_decay: 0.005
+
+augmentation:
+  enabled: true
+  contrast_prob: 0
+  gamma_prob: 0
+
+runtime:
+  num_workers: 8
+  amp_dtype: none
+
+wandb:
+  project: SEGTHOR-3D-CPU
+  notes: just a test
