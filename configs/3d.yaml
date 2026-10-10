@@ -8,9 +8,14 @@ dataset:
 model:
   name: UNet3D
   is_3d: true
-  kernels: 8
+  # 1 for SEGTHOR_3D_1ch, 3 for SEGTHOR_3D_3ch
+  in_channels: 1
+  # 16 matches the local runs (ResUNet3D ~2.6M params); 32 fits an A100/H100
+  kernels: 16
   factor: 2
-  dropout: 0.4
+  # Dropout3d drops whole feature channels: 0.4 removed 40% of every block's
+  # channels. Back to the repo default.
+  dropout: 0.01
 
 training:
   epochs: 50
@@ -27,6 +32,8 @@ training:
 eval:
   enabled: true
   submission: true
+  # Largest connected component for heart / trachea / aorta (src/postprocess.py)
+  postprocess: [lcc]
 
 augmentation:
   enabled: false

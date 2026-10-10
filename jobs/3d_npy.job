@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_3d
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/%x/%j/out.log
+#SBATCH --constraint=scratch-node
+
+# 3D training + evaluation on the preprocessed .npy dataset (configs/3d.yaml).
+# The model is the first argument; anything after it goes to train.py.
+# -J sets the job name, which is also the log folder (logs/<name>/<jobid>/).
+#
+#   sbatch -J ResUNet3D jobs/3d_npy.job ResUNet3D
+#   sbatch -J UNet3D    jobs/3d_npy.job UNet3D
+#   sbatch -J VNet3D    jobs/3d_npy.job VNet3D
+#   sbatch -J MedNeXt3D jobs/3d_npy.job MedNeXt3D --training.batch_size 4
+#   sbatch -J test      jobs/3d_npy.job UNet3D --training.epochs 1    # quick check
+#
+# 3-channel input (soft-tissue, lung and blood HU windows): set CHANNELS=3,
+# which picks SEGTHOR_3D_3ch.tar and --model.in_channels 3 together
+#
+#   sbatch --export=ALL,CHANNELS=3 -J ResUNet3D_3ch jobs/3d_npy.job ResUNet3D
+#
+# MedNeXt3D needs ~5 GB per sample at 132x132x128, so batch 8 does not fit a
+# 40 GB A100: use batch 4, or --partition=gpu_h100 on the sbatch line.
+
+MODEL=${1:-UNet3D}
+shift
+CHANNELS=${CHANNELS:-1}
+DATASET=SEGTHOR_3D_${CHANNELS}ch
+
+# Stream both datasets to the node's NVMe: the .npy volumes for training, the
+# raw NIfTIs for evaluation (scored against the original GT.nii.gz)
+TARS=/scratch-shared/scur0088/tars
+tar -xf "$TARS/$DATASET.tar" -C "$TMPDIR"
+tar -xf "$TARS/segthor_train_full.tar" -C "$TMPDIR"
+
+export PATH="$HOME/.local/bin:$PATH"
+cd /home/scur0088/project
+
+# Run python with -O to turn off asserts
+uv run python -O src/train.py \
+  --config configs/3d.yaml \
+  --paths.data_path "$TMPDIR" \
+  --dataset.name "$DATASET" \
+  --model.in_channels "$CHANNELS" \
+  --model.name "$MODEL" \
+  --model.is_3d \
+  --dataset.box_size 132 132 128 \
+  --dataset.fg_prob 0.7 \
+  "$@"

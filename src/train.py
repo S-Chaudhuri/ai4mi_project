@@ -154,7 +154,7 @@ def get_model(config: Config):
                 f"is_3d=True requires a 3D model {list(models_3d)}, got {config.model.name!r}"
             )
         return models_3d[config.model.name](
-            1,
+            config.model.in_channels,
             num_classes,
             kernels=kernels,
             factor=factor,
@@ -178,6 +178,21 @@ def get_model(config: Config):
         )
     else:
         raise ValueError(f"Unknown model.name {config.model.name!r} for is_3d=False")
+
+
+def check_in_channels(dataset: Dataset, config: Config) -> None:
+    """Fail early when the volumes' channel count differs from model.in_channels
+    (e.g. SEGTHOR_3D_3ch with in_channels 1), instead of inside the first conv."""
+    items = getattr(dataset, "items", None)
+    if not items or "img_vol" not in items[0]:
+        return
+    data_channels = items[0]["img_vol"].shape[0]  # volumes are (C, D, H, W)
+    if data_channels != config.model.in_channels:
+        raise ValueError(
+            f"{config.dataset.name} has {data_channels} channel(s) but "
+            f"model.in_channels is {config.model.in_channels}: "
+            f"pass --model.in_channels {data_channels}"
+        )
 
 
 def build_dataloaders(config: Config):
@@ -242,6 +257,8 @@ def build_dataloaders(config: Config):
         **train_kwargs,  # NEW
     )
     print(f"Training dataset length: {len(train_set)}")
+    if config.model.is_3d:
+        check_in_channels(train_set, config)
 
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
     train_loader_kwargs: dict[str, Any]

@@ -24,6 +24,10 @@ class PathConfig:
     # Guaranteed to be a path if gotten through get_config
     results_dir: Optional[Path] = None
 
+    # Raw NIfTI dataset under data_path holding the original GT.nii.gz files,
+    # which 3D evaluation scores against (the .npy datasets have no NIfTIs).
+    raw_dataset: str = "segthor_train_full"
+
 
 @dataclass
 class DatasetConfig:
@@ -75,6 +79,11 @@ class ModelConfig:
     # Toggle 3D volumetric sub-box pipeline. ShallowNet/ENet are 2D,
     # UNet3D/VNet3D/ResUNet3D/MedNeXt3D are 3D.
     is_3d: bool = False
+
+    # Input channels of the 3D models: 1 for SEGTHOR_3D_1ch (soft-tissue HU
+    # window), 3 for SEGTHOR_3D_3ch (soft-tissue, lung and blood windows).
+    # Must match the dataset; training and evaluation check this.
+    in_channels: int = 1
 
     # Number of kernels in the first convolutional layer (doubles per stage).
     kernels: int = 8

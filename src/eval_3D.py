@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import json
 
 from src.postprocess import POSTPROCESSING, postprocess
-from src.train import get_model, img_transform_3d
+from src.train import check_in_channels, get_model, img_transform_3d
 from src.utils.config import Config
 from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.evaluation import (
@@ -95,9 +95,12 @@ def run_eval(config: Config):
     ds = BoxDataset(
         config.eval.split, data_root_dir, sub_box_size=None, num_classes=K
     )  # whole volumes, no transforms
+    check_in_channels(ds, config)
 
     # Raw NIfTIs of both the train and val splits live under segthor_part1/train
     # (slice_segthor.py only reads from train/ and test/), so map the split.
+    # The original GT NIfTIs are not in the preprocessed .npy dataset: they live
+    # in the raw dataset (paths.raw_dataset, e.g. segthor_train_full/train/...)
     raw_split = "test" if config.eval.split == "test" else "train"
 
     results = {}
@@ -105,11 +108,10 @@ def run_eval(config: Config):
         patient_id = config.eval.patient_id
         if patient_id is not None and item["stem"] != f"Patient_{patient_id:02d}":
             continue
-        meta = json.load(                                                     # NEW
-            open(data_root_dir / config.eval.split / item["stem"] / "meta.json")
-        )
+        meta_path = data_root_dir / config.eval.split / item["stem"] / "meta.json"  # NEW
+        meta = json.loads(meta_path.read_text())
         img = img_transform_3d(item["img_vol"])
-        probs = predict_volume(            
+        probs = predict_volume(
             net,
             img,
             config.dataset.box_size,
@@ -118,7 +120,8 @@ def run_eval(config: Config):
             config.training.batch_size,
             device,
             config.dataset.use_coords and not config.dataset.coarse,
-            config.model.temperature,)
+            config.model.temperature,
+        )
         pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)  # (z, y, x)   <- updated comment
         # Before the metrics and the submission, so both use the same prediction
         pred = postprocess(pred, config.eval.postprocess)
@@ -145,10 +148,17 @@ def run_eval(config: Config):
         # )
         # pred_xyz = to_native_space(pred, gt_xyz.shape)  # back to native grid
         gt_xyz, spacing, affine = load_native_gt(
-            config.paths.data_path, item["stem"], split_dir=raw_split, dataset_name=config.dataset.name
+            config.paths.data_path,
+            item["stem"],
+            split_dir=raw_split,
+            dataset_name=config.paths.raw_dataset,
         )
         pred_xyz = to_native_space(pred, meta)                                    # was: (pred, gt_xyz.shape)
-        assert pred_xyz.shape == gt_xyz.shape, (pred_xyz.shape, gt_xyz.shape)     # NEW
+        # NEW. Not an assert: jobs run with python -O, which strips asserts
+        if pred_xyz.shape != gt_xyz.shape:
+            raise ValueError(
+                f"{item['stem']}: prediction {pred_xyz.shape} != GT {gt_xyz.shape}"
+            )
         # sanity check for patient 02
         if patient_id == 2:
             gt_stored = np.load(data_root_dir / config.eval.split / item["stem"] / "gt.npy").astype(np.uint8)
