@@ -150,10 +150,24 @@ class RuntimeConfig:
     # happens with negative numbers
     hd95_interval: int = 5
 
-    # Mixed-precision autocast dtype on GPU. "bf16" (default) is faster on
-    # Hopper, needs no GradScaler and has no fp16 range issues. "fp16" keeps
+    # Threads to parallelize HD95 across (per sample-class task in the hot
+    # loop). 0 = auto: all available CPUs ($SLURM_CPUS_PER_TASK if set, else
+    # the CPU count). cKDTree/numpy/scipy run in C and release the GIL, so a
+    # thread pool gets full parallelism with zero IPC.
+    hd95_num_workers: int = 0
+
+    # Torch intra-op threads for the main process. 0 = auto: $SLURM_CPUS_PER_TASK
+    # if set, else the CPU count. DataLoading workers always use 1 thread each,
+    # so total threads ~= num_threads + num_workers: budget the node's cores
+    # between the two (e.g. 96 cores -> num_threads 88, num_workers 8).
+    num_threads: int = 0
+
+    # Mixed-precision autocast dtype. On GPU: "bf16" (default) is faster on
+    # Hopper, needs no GradScaler and has no fp16 range issues; "fp16" keeps
     # the old behavior (GradScaler enabled, loss computed outside autocast).
-    amp_dtype: Literal["bf16", "fp16"] = "bf16"
+    # On CPU: "none" runs plain fp32 (safer on Zen3/Rome, which lack AVX512);
+    # "bf16" may win on Zen4/Genoa via oneDNN.
+    amp_dtype: Literal["bf16", "fp16", "none"] = "bf16"
 
     # Let cuDNN benchmark convolution algorithms per shape. Faster, but
     # slightly non-deterministic; off by default to keep runs reproducible.

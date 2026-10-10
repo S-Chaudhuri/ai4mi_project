@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --job-name=segthor_3d_cpu
+#SBATCH --partition=genoa
+#SBATCH --cpus-per-task=96
+#SBATCH --mem=256G
+#SBATCH --time=08:00:00
+#SBATCH --output=logs/%j/out.log
+
+# CPU training on Snellius (genoa; same script works for rome).
+# CPU budget: torch gets (cpus-per-task - num_workers) threads, each data
+# loading worker gets 1; the HD95 phase between batches then uses all cores
+# (torch is idle). 96 cores -> 88 torch threads + 8 workers.
+# If bf16 turns out slower than fp32 on this node (likely on rome/Zen3,
+# possibly a win on genoa/Zen4), flip --runtime.amp_dtype.
+# Submit from the project root: sbatch jobs/3d_cpu.job
+export PATH="$HOME/.local/bin:$PATH"
+
+# numpy/scipy must stay inside the allocated cores or they fight torch
+export OMP_NUM_THREADS=$((SLURM_CPUS_PER_TASK - 8))
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
+
+# Stream dataset to nvme on node for fast access (if the partition has it);
+# otherwise drop the tar and point --paths.data_path at /scratch-shared
+tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
+
+uv run python -O /home/scur0088/project/src/train.py \
+    --config /home/scur0088/project/configs/boxes.yaml \
+    --paths.data_path "$TMPDIR" \
+    --paths.results_dir /home/scur0088/project/results/segthor_3d_cpu_%j \
+    --training.gpu False \
+    --runtime.amp_dtype none \
+    --runtime.num_workers 8

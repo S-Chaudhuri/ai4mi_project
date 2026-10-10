@@ -327,6 +327,57 @@ hausdorff_coef = partial(meta_hausdorff, 100.0)
 hd95_coef = partial(meta_hausdorff, 95.0)
 
 
+# Class-map based HD95 for the training hot loop. The one-hot path above
+# copies a (1, K, D, H, W) int32 tensor to numpy per sample; these operate on
+# (D, H, W) uint8 class maps instead, which is ~20x less data to move.
+# Tasks are one (sample, class) pair each, so a batch of B samples with C
+# foreground classes gives B*C independent tasks -- enough to fill a whole
+# node even for small batches.
+
+
+def _hd95_one_class(args: tuple) -> float:
+    """HD95 for one (sample, class) pair.
+
+    args: (gt_u8, pred_u8, j, spacing_mm); gt_u8/pred_u8 are (D, H, W) uint8
+    class maps, j the class index.
+    """
+    gt_u8, pred_u8, j, spacing_mm = args
+    return hausdorff_distance(gt_u8 == j, pred_u8 == j, spacing_mm, 95.0)
+
+
+def hd95_batch_maps(
+    gt_u8: np.ndarray,
+    pred_u8: np.ndarray,
+    spacings: list[tuple],
+    num_classes: int,
+    pool=None,
+) -> np.ndarray:
+    """HD95 per sample, per class for a batch.
+
+    gt_u8/pred_u8: (B, D, H, W) uint8 class maps. spacings: one (dz, dy, dx)
+    mm tuple per sample. pool: optional ThreadPoolExecutor; None runs
+    sequentially. Classes absent from the gt stay 0.0 (masked out of every
+    reported mean, mirroring meta_hausdorff). Returns (B, num_classes) float32.
+    """
+    b = gt_u8.shape[0]
+    res = np.zeros((b, num_classes), dtype=np.float32)
+    tasks = []
+    for i in range(b):
+        for j in range(1, min(num_classes, int(gt_u8[i].max()) + 1)):
+            if not (gt_u8[i] == j).any():
+                continue
+            tasks.append((i, j, (gt_u8[i], pred_u8[i], j, spacings[i])))
+    if pool is None:
+        for i, j, a in tasks:
+            res[i, j] = _hd95_one_class(a)
+    else:
+        for (i, j, _), val in zip(
+            tasks, pool.map(_hd95_one_class, (a for _, _, a in tasks))
+        ):
+            res[i, j] = val
+    return res
+
+
 def meta_average_hausdorff(
     label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
 ) -> Tensor:

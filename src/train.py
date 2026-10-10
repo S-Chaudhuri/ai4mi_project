@@ -23,7 +23,9 @@
 # SOFTWARE.
 
 import dataclasses
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import os
 import warnings
 from typing import Any, Optional
 from pathlib import Path
@@ -61,7 +63,7 @@ from src.utils.utils import (
     tqdm_,
     dice_coef,
     masked_mean,
-    hd95_coef,
+    hd95_batch_maps,
     save_images,
     patient_key,
     load_spacing,
@@ -127,6 +129,28 @@ def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
 # def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
 #     vol = torch.from_numpy(np.asarray(vol)).long()[None, ...]  # fake batch dim
 #     return class2one_hot(vol, K=K)[0]  # (K, D, H, W)
+
+
+def setup_threads(config: Config) -> None:
+    """Size the main process's torch thread pool for the node.
+
+    On Snellius each task is pinned to its cores, so the defaults (all
+    visible cores, per DataLoader worker process on top) oversubscribe badly.
+    interop must be set before any parallel op runs, hence first thing in main.
+    """
+    n = config.runtime.num_threads
+    if n <= 0:
+        env = os.environ.get("SLURM_CPUS_PER_TASK")
+        n = int(env) if env else (os.cpu_count() or 1)
+    torch.set_num_interop_threads(1)
+    torch.set_num_threads(n)
+    print(f">> Torch threads: {n} (data loading workers: 1 each)")
+
+
+def worker_init_fn(_worker_id: int) -> None:
+    # Each DataLoader worker is its own process; give it a single thread so
+    # 8 workers don't each spawn a full OMP/MKL pool alongside the main one.
+    torch.set_num_threads(1)
 
 
 def get_model(config: Config):
@@ -243,6 +267,7 @@ def build_dataloaders(config: Config):
         num_workers=config.runtime.num_workers,
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
+        worker_init_fn=worker_init_fn,
         **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
@@ -261,6 +286,7 @@ def build_dataloaders(config: Config):
         num_workers=config.runtime.num_workers,
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
+        worker_init_fn=worker_init_fn,
         shuffle=False,
     )
 
@@ -406,12 +432,21 @@ def runTraining(config: Config):
     loss_fn = get_loss_func(config)
 
     # bf16 needs no GradScaler (no fp16 range issues); fp16 keeps the old
-    # scaler-based behavior.
-    amp_dtype = torch.bfloat16
+    # scaler-based behavior; "none" runs plain fp32 (autocast disabled), which
+    # is safer on CPUs without AVX512 (Rome/Zen3).
     if config.training.gpu:
         amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[
             config.runtime.amp_dtype
         ]
+    elif config.runtime.amp_dtype == "fp16":
+        raise ValueError(
+            'runtime.amp_dtype="fp16" is GPU-only; use "bf16" or "none" on CPU'
+        )
+    else:
+        amp_dtype = {"bf16": torch.bfloat16, "none": torch.float32}[
+            config.runtime.amp_dtype
+        ]
+    amp_enabled = amp_dtype is not torch.float32
     scaler = torch.amp.GradScaler(
         device_type,
         enabled=config.training.gpu and config.runtime.amp_dtype == "fp16",
@@ -477,6 +512,29 @@ def runTraining(config: Config):
 
     best_dice: float = 0
 
+    # Read spacing.pkl once, not on every HD95 batch
+    spacing_map = (
+        load_spacing(config.paths.data_path / config.dataset.name)
+        if config.model.is_3d
+        else None
+    )
+
+    # HD95 thread pool, created lazily on first use (once the DataLoader
+    # workers are up and the main process is quiet between batches).
+    # 0 = auto: use every available CPU.
+    hd95_pool = None
+
+    def ensure_hd95_pool():
+        nonlocal hd95_pool
+        if hd95_pool is None:
+            n = config.runtime.hd95_num_workers
+            if n <= 0:
+                env = os.environ.get("SLURM_CPUS_PER_TASK")
+                n = int(env) if env else (os.cpu_count() or 1)
+            hd95_pool = ThreadPoolExecutor(max_workers=n)
+            print(f">> HD95 pool: {n} threads")
+        return hd95_pool
+
     # NOTE Just need a total rewrite of this, split it up into functions
     # Also not handy bc train and val are in this same loop
     for e in range(config.training.epochs):
@@ -533,7 +591,9 @@ def runTraining(config: Config):
                         m == "val" or config.runtime.hd95_in_train
                     ) and calculate_hd95
 
-                    with torch.autocast(device_type=device_type, dtype=amp_dtype):
+                    with torch.autocast(
+                        device_type=device_type, dtype=amp_dtype, enabled=amp_enabled
+                    ):
                         pred_logits = net(img)
                         pred_probs = F.softmax(
                             config.model.temperature * pred_logits.float(), dim=1
@@ -549,23 +609,28 @@ def runTraining(config: Config):
                             ).sum()
 
                         if compute_hd95:
-                            spacing_map = (
-                                load_spacing(
-                                    config.paths.data_path / config.dataset.name
-                                )
-                                if config.model.is_3d
-                                else None
+                            # One class-map conversion per batch (a single
+                            # host copy, ~20x less data than the per-sample
+                            # one-hot int32 copies), then one HD95 task per
+                            # (sample, class) on the thread pool.
+                            gt_u8 = gt_class.to(torch.uint8).cpu().numpy()
+                            pred_u8 = pred_class.to(torch.uint8).cpu().numpy()
+                            spacings = [
+                                spacing_map[patient_key(data["stems"][b])]
+                                if spacing_map
+                                else data_spacing
+                                for b in range(batch_size)
+                            ]
+                            hd95_res = hd95_batch_maps(
+                                gt_u8,
+                                pred_u8,
+                                spacings,
+                                num_classes,
+                                pool=ensure_hd95_pool(),
                             )
-                            pred_seg = class2one_hot(pred_class, num_classes)
-                            for b in range(batch_size):
-                                sp = (
-                                    spacing_map[patient_key(data["stems"][b])]
-                                    if spacing_map
-                                    else data_spacing
-                                )
-                                log_hd95[e, j + b, :] = hd95_coef(
-                                    gt[b : b + 1], pred_seg[b : b + 1], spacing_mm=sp
-                                )[0]
+                            log_hd95[e, j : j + batch_size, :] = torch.from_numpy(
+                                hd95_res
+                            ).to(device, non_blocking=True)
                         log_present[e, j : j + batch_size, :] = (
                             gt.sum(dim=tuple(range(2, gt.ndim))) > 0
                         )  # Per-sample, per-class: is the class in the gt?
@@ -685,9 +750,15 @@ def runTraining(config: Config):
     if profiler is not None:
         profiler.stop()
 
+    if hd95_pool is not None:
+        hd95_pool.shutdown(wait=True)
+
 
 def main():
     config = get_config()
+
+    # Size torch threads before any parallel op runs (interop requirement)
+    setup_threads(config)
 
     # Seed everything right at the beginning
     seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
