@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler
 from functools import partial
 import autoroot  # noqa     Do not remove
 
+from scripts.generate_example_yaml_config import generate_yaml_config
 from src.utils.config import Config, get_config
 from src.utils.dataset import GridBoxDataset, SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
@@ -380,10 +381,10 @@ def runTraining(config: Config):
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
 
-    result_dir = config.paths.dest or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
-    )
+    result_dir: Path = config.paths.dest
     result_dir.mkdir(parents=True, exist_ok=True)
+    generate_yaml_config(config, result_dir / "config.yaml")
+
     device_type = "cuda" if config.training.gpu else "cpu"
 
     profiler: torch.profiler.profile | None = None
