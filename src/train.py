@@ -302,9 +302,9 @@ def setup(
 
     net = get_model(config)
 
-    net.compile()
     net.init_weights()
     net.to(device)
+    net.compile()
 
     optimizer = torch.optim.AdamW(
         net.parameters(),
