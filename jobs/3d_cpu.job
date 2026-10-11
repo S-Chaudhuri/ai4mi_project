@@ -2,7 +2,6 @@
 #SBATCH --job-name=segthor_3d_cpu
 #SBATCH --partition=genoa
 #SBATCH --cpus-per-task=96
-#SBATCH --mem=256G
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/%j/out.log
 
@@ -25,9 +24,9 @@ export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
 tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
 
 uv run python -O /home/scur0088/project/src/train.py \
-    --config /home/scur0088/project/configs/boxes.yaml \
+    --config /home/scur0088/project/configs/3d.yaml \
     --paths.data_path "$TMPDIR" \
     --paths.results_dir /home/scur0088/project/results/segthor_3d_cpu_%j \
-    --training.gpu False \
+    --training.no-gpu \
     --runtime.amp_dtype none \
     --runtime.num_workers 8
