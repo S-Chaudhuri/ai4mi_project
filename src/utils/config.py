@@ -1,4 +1,5 @@
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
@@ -404,6 +405,32 @@ def _load_config_file():
     return {}, remaining_argv
 
 
+def _new_results_dir(config: Config) -> Path:
+    """results/<dataset>/<model>_<timestamp>[_job<SLURM_JOB_ID>], created here.
+
+    Runs used to share a folder when two jobs on the same dataset started in
+    the same second, and then overwrote each other's bestweights.pt. The model
+    name and Slurm job id make the name unique per run; creating the folder
+    with exist_ok=False (atomic) and moving on to _1, _2, ... covers any run
+    that still lands on the same name, e.g. local runs without Slurm.
+    """
+    stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    name = f"{config.model.name}_{stamp}"
+    if job_id := os.environ.get("SLURM_JOB_ID"):
+        name += f"_job{job_id}"
+    base = Path("results") / config.dataset.name / name
+
+    base.parent.mkdir(parents=True, exist_ok=True)
+    results_dir, i = base, 1
+    while True:
+        try:
+            results_dir.mkdir()
+            return results_dir
+        except FileExistsError:
+            results_dir = base.with_name(f"{base.name}_{i}")
+            i += 1
+
+
 def get_config() -> Config:
     yaml_dict, remaining_argv = _load_config_file()
 
@@ -423,9 +450,9 @@ def get_config() -> Config:
         f"{config.dataset.name}-{config.model.name}"
     )
 
-    config.paths.results_dir = config.paths.results_dir or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
-    )
-    config.paths.results_dir.mkdir(parents=True, exist_ok=True)
+    if config.paths.results_dir is None:
+        config.paths.results_dir = _new_results_dir(config)
+    else:
+        config.paths.results_dir.mkdir(parents=True, exist_ok=True)
 
     return config
