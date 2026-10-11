@@ -17,10 +17,13 @@ export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
 # otherwise drop the tar and point --paths.data_path at /scratch-shared
 tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
 
-uv run python -O /home/scur0088/project/src/train.py \
+uv run python -m uv run python -O -m torch.distributed.run --nproc_per_node=4 /home/scur0088/project/src/train.py \
   --config /home/scur0088/project/configs/3d.yaml \
   --paths.data_path "$TMPDIR" \
   --paths.results_dir /home/scur0088/project/results/segthor_3d_cpu_%j \
   --training.no-gpu \
   --runtime.amp_dtype none \
-  --runtime.num_workers 8
+  --eval.enabled \
+  --eval.submission \
+  --eval.postprocess lcc26 \
+  --runtime.num_workers 2

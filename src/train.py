@@ -267,16 +267,11 @@ def build_dataloaders(config: Config):
         # NOTE why do we set shuffle to false
         train_loader_kwargs = {"shuffle": False}
 
-    # No idea if this is gonna work
-    train_loader_kwargs["sampler"] = DistributedSampler(
-        train_loader_kwargs["sampler"], shuffle=True
-    )
-
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size,
         num_workers=config.runtime.num_workers,
-        pin_memory=True,
+        pin_memory=config.training.gpu,
         persistent_workers=config.runtime.num_workers > 0,
         worker_init_fn=worker_init_fn,
         **train_loader_kwargs,
@@ -298,7 +293,7 @@ def build_dataloaders(config: Config):
         val_set,
         batch_size=batch_size,
         num_workers=config.runtime.num_workers,
-        pin_memory=True,
+        pin_memory=config.training.gpu,
         persistent_workers=config.runtime.num_workers > 0,
         worker_init_fn=worker_init_fn,
         **val_loader_kwargs,
@@ -329,9 +324,6 @@ def setup(
         net = DDP(net)
 
     net.compile()
-
-    if "LOCAL_RANK" in os.environ:
-        net = DDP(net)
 
     optimizer = torch.optim.AdamW(
         net.parameters(),
