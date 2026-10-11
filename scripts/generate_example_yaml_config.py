@@ -23,11 +23,13 @@ _PlainDumper.add_multi_representer(Path, _represent_path)
 _PlainDumper.add_representer(tuple, _represent_tuple)
 
 
-def main():
-    config = Config()
-
-    with open(autoroot.root / "configs/example.yaml", "w") as fp:
+def generate_yaml_config(config: Config, path: Path):
+    with open(path, "w") as fp:
         yaml.dump(dataclasses.asdict(config), fp, Dumper=_PlainDumper)
+
+
+def main():
+    generate_yaml_config(Config(), autoroot.root / "configs/example_config.yaml")
 
 
 if __name__ == "__main__":
