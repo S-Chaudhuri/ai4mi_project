@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from src.postprocess import POSTPROCESSING, postprocess
-from src.train import get_model
-from src.utils.config import Config
+from src.train import get_model, setup_threads
+from src.utils.config import Config, get_config
 from src.utils.dataset import BoxDataset, window_starts
 from src.utils.evaluation import (
     evaluate_patient,
@@ -136,3 +136,15 @@ def run_eval(config: Config):
 
     write_csv(results, eval_results_dir / "metrics.csv")
     print(f">> Wrote metrics to {eval_results_dir / 'metrics.csv'}")
+
+
+def main():
+    config = get_config()
+
+    setup_threads(config)
+
+    run_eval(config)
+
+
+if __name__ == "__main__":
+    main()

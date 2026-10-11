@@ -34,12 +34,14 @@ import traceback
 
 import torch
 from torch.optim.lr_scheduler import LRScheduler
+from torch.utils.data.distributed import DistributedSampler
 import wandb
 import numpy as np
 import torch.nn.functional as F
+import torch.distributed as dist
 from torch import nn, Tensor
 from torch.utils.data import DataLoader, Dataset, RandomSampler
-
+from torch.nn.parallel import DistributedDataParallel as DDP
 from functools import partial
 import autoroot  # noqa     Do not remove
 
@@ -129,6 +131,10 @@ def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
 # def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
 #     vol = torch.from_numpy(np.asarray(vol)).long()[None, ...]  # fake batch dim
 #     return class2one_hot(vol, K=K)[0]  # (K, D, H, W)
+
+
+def is_main_thread() -> bool:
+    return int(os.environ.get("LOCAL_RANK", 0)) == 0
 
 
 def setup_threads(config: Config) -> None:
@@ -241,9 +247,15 @@ def build_dataloaders(config: Config):
         **train_kwargs,  # NEW
     )
 
+    is_dist = "LOCAL_RANK" in os.environ
+
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
     train_loader_kwargs: dict[str, Any]
-    if config.model.is_3d:
+    if is_dist:
+        train_loader_kwargs = {
+            "sampler": DistributedSampler(train_set, shuffle=True)
+        }
+    elif config.model.is_3d:
         train_loader_kwargs = {
             "sampler": RandomSampler(
                 train_set,
@@ -262,7 +274,7 @@ def build_dataloaders(config: Config):
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
         worker_init_fn=worker_init_fn,
-        **train_loader_kwargs,  # NEW: replaces shuffle=False
+        **train_loader_kwargs,
     )
 
     val_set = val_dataset_cls(  # NEW: was dataset_cls
@@ -274,6 +286,9 @@ def build_dataloaders(config: Config):
         **dataset_kwargs,
         **val_kwargs,  # NEW
     )
+    val_loader_kwargs: dict[str, Any] = {"shuffle": False}
+    if is_dist:
+        val_loader_kwargs = {"sampler": DistributedSampler(val_set, shuffle=False)}
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
@@ -281,10 +296,10 @@ def build_dataloaders(config: Config):
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
         worker_init_fn=worker_init_fn,
-        shuffle=False,
+        **val_loader_kwargs,
     )
 
-    if config.wandb.store_artifect:
+    if is_main_thread() and config.wandb.store_artifect:
         # Store the checksum of the dataset
         artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
         artifect.add_reference(f"file://{data_root_dir}")
@@ -304,7 +319,11 @@ def setup(
 
     net.init_weights()
     net.to(device)
+
     net.compile()
+
+    if "LOCAL_RANK" in os.environ:
+        net = DDP(net)
 
     optimizer = torch.optim.AdamW(
         net.parameters(),
@@ -536,6 +555,11 @@ def runTraining(config: Config):
         # Only run hd95 on these intervals, including first epoch to make sure graph looks nice
         calculate_hd95 = e % config.runtime.hd95_interval == 0
 
+        if hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(e)
+        if hasattr(val_loader.sampler, "set_epoch"):
+            val_loader.sampler.set_epoch(e)
+
         for m in ["train", "val"]:
             match m:
                 case "train":
@@ -684,6 +708,30 @@ def runTraining(config: Config):
                         }
                     tq_iter.set_postfix(postfix_dict)
 
+        # Sync the tensors between runs
+        if dist.is_initialized():
+            dist.all_reduce(inter_tra[e], op=dist.ReduceOp.SUM)
+            dist.all_reduce(union_tra[e], op=dist.ReduceOp.SUM)
+            dist.all_reduce(inter_val[e], op=dist.ReduceOp.SUM)
+            dist.all_reduce(union_val[e], op=dist.ReduceOp.SUM)
+
+            dist.all_reduce(log_loss_tra[e], op=dist.ReduceOp.SUM)
+            dist.all_reduce(log_loss_val[e], op=dist.ReduceOp.SUM)
+
+            dist.all_reduce(log_hd95_tra[e], op=dist.ReduceOp.SUM)
+            dist.all_reduce(log_hd95_val[e], op=dist.ReduceOp.SUM)
+
+            present_tra_int = log_present_tra[e].int()
+            present_val_int = log_present_val[e].int()
+            dist.all_reduce(present_tra_int, op=dist.ReduceOp.SUM)
+            dist.all_reduce(present_val_int, op=dist.ReduceOp.SUM)
+            log_present_tra[e] = present_tra_int.bool()
+            log_present_val[e] = present_val_int.bool()
+
+            world_size = dist.get_world_size()
+            log_loss_tra[e] /= world_size
+            log_loss_val[e] /= world_size
+
         metrics = {
             "epoch": e,
             "train/loss": log_loss_tra[e].mean().item(),
@@ -737,10 +785,12 @@ def runTraining(config: Config):
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
-            with open(result_dir / "best_epoch.txt", "a") as f:
-                f.write(message)
+            if is_main_thread():
+                with open(result_dir / "best_epoch.txt", "a") as f:
+                    f.write(message)
 
-            torch.save(net.state_dict(), result_dir / "bestweights.pt")
+                state_dict = net.module.state_dict() if isinstance(net, DDP) else net.state_dict()
+                torch.save(state_dict, result_dir / "bestweights.pt")
 
     if profiler is not None:
         profiler.stop()
@@ -751,6 +801,10 @@ def runTraining(config: Config):
 
 def main():
     config = get_config()
+
+    if "LOCAL_RANK" in os.environ:
+        backend = "nccl" if config.training.gpu else "gloo"
+        dist.init_process_group(backend=backend)
 
     # Size torch threads before any parallel op runs (interop requirement)
     setup_threads(config)
