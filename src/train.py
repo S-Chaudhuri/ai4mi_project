@@ -267,6 +267,11 @@ def build_dataloaders(config: Config):
         # NOTE why do we set shuffle to false
         train_loader_kwargs = {"shuffle": False}
 
+    # No idea if this is gonna work
+    train_loader_kwargs["sampler"] = DistributedSampler(
+        train_loader_kwargs["sampler"], shuffle=True
+    )
+
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size,
@@ -319,6 +324,9 @@ def setup(
 
     net.init_weights()
     net.to(device)
+
+    if "LOCAL_RANK" in os.environ:
+        net = DDP(net)
 
     net.compile()
 
@@ -772,11 +780,9 @@ def runTraining(config: Config):
                     metrics[f"val/hd95_{class_name}"] = masked_mean(
                         log_hd95_val[e, :, k], log_present_val[e, :, k]
                     ).item()
-        wandb.log(metrics)
 
-        # Scheduler at the end of each epoch
-        if scheduler is not None:
-            scheduler.step()
+        if is_main_thread():
+            wandb.log(metrics)
 
         current_dice: float = (
             ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8)).mean().item()
