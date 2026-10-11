@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=3d_cpu
+#SBATCH --partition=genoa
+#SBATCH --cpus-per-task=24
+#SBATCH --time=08:00:00
+#SBATCH --output=logs/%j/out.log
+
+export PATH="$HOME/.local/bin:$PATH"
+
+# numpy/scipy must stay inside the allocated cores or they fight torch
+export OMP_NUM_THREADS=$((SLURM_CPUS_PER_TASK - 8))
+export MKL_NUM_THREADS=$OMP_NUM_THREADS
+export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
+
+# Stream dataset to nvme on node for fast access (if the partition has it);
+# otherwise drop the tar and point --paths.data_path at /scratch-shared
+tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
+
+uv run python -O /home/scur0088/project/src/train.py \
+  --config /home/scur0088/project/configs/3d.yaml \
+  --paths.data_path "$TMPDIR" \
+  --paths.results_dir /home/scur0088/project/results/segthor_3d_cpu_%j \
+  --training.no-gpu \
+  --runtime.amp_dtype none \
+  --runtime.num_workers 8

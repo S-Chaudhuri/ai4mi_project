@@ -24,10 +24,11 @@ from pathlib import Path
 from functools import partial
 from multiprocessing import Pool
 from contextlib import AbstractContextManager
-from typing import Callable, Iterable, List, Set, Tuple, TypeVar, cast
+from typing import TYPE_CHECKING, Callable, Iterable, List, Set, Tuple, TypeVar, cast
 
 import torch
 import numpy as np
+import os
 import random
 import pickle
 import re
@@ -36,6 +37,10 @@ from tqdm import tqdm
 from torch import Tensor, einsum
 from scipy import ndimage
 from scipy.spatial import cKDTree
+
+
+if TYPE_CHECKING:
+    from src.utils.config import Config
 
 
 tqdm_ = partial(
@@ -66,6 +71,38 @@ def seed_all(seed: int, gpu: bool = False, cudnn_benchmark: bool = False):
 
     random.seed(seed)
     np.random.seed(seed)
+
+
+def setup_threads(config: "Config") -> None:
+    """Size the main process's torch thread pool (CPU-only runs).
+
+    On Snellius each task is pinned to its cores, so the defaults (all visible
+    cores, plus a pool per DataLoader worker process on top) oversubscribe
+    badly. interop must be set before any parallel op runs, hence first thing
+    in main.
+    """
+    if config.training.gpu:
+        return
+
+    n = config.runtime.num_threads
+    if n <= 0:
+        env = os.environ.get("SLURM_CPUS_PER_TASK")
+        if env:
+            n = int(env)
+        elif hasattr(os, "sched_getaffinity"):
+            n = len(os.sched_getaffinity(0))
+        else:
+            n = os.cpu_count() or 1
+
+    torch.set_num_interop_threads(1)
+    torch.set_num_threads(n)
+    print(f">> Torch threads: {n} (data loading workers: 1 each)")
+
+
+def worker_init_fn(_worker_id: int) -> None:
+    # Each DataLoader worker is its own process; give it a single thread so
+    # N workers don't each spawn a full OMP/MKL pool alongside the main one.
+    torch.set_num_threads(1)
 
 
 def class_index_to_name(index: int):

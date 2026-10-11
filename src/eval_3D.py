@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from src.postprocess import POSTPROCESSING, postprocess
 from src.train import get_model
-from src.utils.config import Config
+from src.utils.config import Config, get_config
 from src.utils.dataset import BoxDataset, window_starts
 from src.utils.evaluation import (
     evaluate_patient,
@@ -14,6 +14,7 @@ from src.utils.evaluation import (
     write_csv,
     write_submission,
 )
+from src.utils.utils import setup_threads
 
 
 def gaussian_window(size, sigma_scale=1 / 8):
@@ -136,3 +137,15 @@ def run_eval(config: Config):
 
     write_csv(results, eval_results_dir / "metrics.csv")
     print(f">> Wrote metrics to {eval_results_dir / 'metrics.csv'}")
+
+
+def main():
+    config = get_config()
+
+    setup_threads(config)
+
+    run_eval(config)
+
+
+if __name__ == "__main__":
+    main()

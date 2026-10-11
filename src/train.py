@@ -59,6 +59,7 @@ from src.utils.utils import (
     probs2one_hot,
     probs2class,
     seed_all,
+    setup_threads,
     tqdm_,
     dice_coef,
     masked_mean,
@@ -66,6 +67,7 @@ from src.utils.utils import (
     save_images,
     patient_key,
     load_spacing,
+    worker_init_fn,
 )
 from src.utils.losses import (
     CrossEntropy,
@@ -244,6 +246,7 @@ def build_dataloaders(config: Config):
         num_workers=config.runtime.num_workers,
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
+        worker_init_fn=worker_init_fn,
         **train_loader_kwargs,  # NEW: replaces shuffle=False
     )
 
@@ -262,6 +265,7 @@ def build_dataloaders(config: Config):
         num_workers=config.runtime.num_workers,
         pin_memory=True,
         persistent_workers=config.runtime.num_workers > 0,
+        worker_init_fn=worker_init_fn,
         shuffle=False,
     )
 
@@ -285,6 +289,7 @@ def setup(
 
     net.init_weights()
     net.to(device)
+    net.compile()
 
     optimizer = torch.optim.AdamW(
         net.parameters(),
@@ -384,7 +389,7 @@ def runTraining(config: Config):
 
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
-    result_dir: Path = config.paths.dest
+    result_dir: Path = config.paths.results_dir
     result_dir.mkdir(parents=True, exist_ok=True)
     generate_yaml_config(config, result_dir / "config.yaml")
 
@@ -406,12 +411,21 @@ def runTraining(config: Config):
     loss_fn = get_loss_func(config)
 
     # bf16 needs no GradScaler (no fp16 range issues); fp16 keeps the old
-    # scaler-based behavior.
-    amp_dtype = torch.bfloat16
+    # scaler-based behavior; "none" runs plain fp32 (autocast disabled), which
+    # is safer on CPUs without AVX512 (Rome/Zen3).
     if config.training.gpu:
         amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[
             config.runtime.amp_dtype
         ]
+    elif config.runtime.amp_dtype == "fp16":
+        raise ValueError(
+            'runtime.amp_dtype="fp16" is GPU-only; use "bf16" or "none" on CPU'
+        )
+    else:
+        amp_dtype = {"bf16": torch.bfloat16, "none": torch.float32}[
+            config.runtime.amp_dtype
+        ]
+    amp_enabled = amp_dtype is not torch.float32
     scaler = torch.amp.GradScaler(
         device_type,
         enabled=config.training.gpu and config.runtime.amp_dtype == "fp16",
@@ -533,7 +547,9 @@ def runTraining(config: Config):
                         m == "val" or config.runtime.hd95_in_train
                     ) and calculate_hd95
 
-                    with torch.autocast(device_type=device_type, dtype=amp_dtype):
+                    with torch.autocast(
+                        device_type=device_type, dtype=amp_dtype, enabled=amp_enabled
+                    ):
                         pred_logits = net(img)
                         pred_probs = F.softmax(
                             config.model.temperature * pred_logits.float(), dim=1
@@ -688,6 +704,9 @@ def runTraining(config: Config):
 
 def main():
     config = get_config()
+
+    # Size torch threads before any parallel op runs (interop requirement)
+    setup_threads(config)
 
     # Seed everything right at the beginning
     seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
