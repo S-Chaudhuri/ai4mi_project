@@ -76,3 +76,25 @@ class CrossEntropyPlusDice:
         return self.ce(pred_softmax, weak_target) + self.dice_weight * self.dice(
             pred_softmax, weak_target
         )
+
+class TverskyLoss:
+    def __init__(self, *, idk, is_3d=True, alpha=0.3, beta=0.7, **kwargs):
+        self.idk = idk
+        self.dims = (2, 3, 4) if is_3d else (2, 3)
+        self.alpha = alpha
+        self.beta = beta
+        print(f"Initialized {self.__class__.__name__} with idk={idk}, is_3d={is_3d}")
+
+    def __call__(self, pred_softmax, weak_target):
+        p = pred_softmax[:, self.idk, ...].float()
+        g = weak_target[:, self.idk, ...].float()
+
+        tp = (p * g).sum(dim=self.dims)
+        fp = (p * (1 - g)).sum(dim=self.dims)
+        fn = ((1 - p) * g).sum(dim=self.dims)
+
+        tversky_score = (tp + 1e-10) / (
+            tp + self.alpha * fp + self.beta * fn + 1e-10
+        )
+        loss = 1 - tversky_score.mean()
+        return loss
