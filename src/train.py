@@ -69,6 +69,8 @@ from src.utils.utils import (
 from src.utils.losses import (
     CrossEntropy,
     CrossEntropyPlusDice,
+    TverskyLoss, 
+    DeepSupervisionLoss
 )
 
 
@@ -355,6 +357,8 @@ def get_loss_func(config: Config):
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
         raise ValueError(config.training.mode, config.dataset.name)
+    
+    foreground_idk = [c for c in idk if c != 0]
 
     if config.training.loss == "ce":
         return CrossEntropy(idk=idk)
@@ -365,6 +369,14 @@ def get_loss_func(config: Config):
             dice_idk=dice_idk,
             is_3d=config.model.is_3d,
             dice_weight=config.training.dice_weight,
+        )
+    elif config.training.loss == "tversky":
+        return TverskyLoss(
+        idk=foreground_idk,
+        is_3d=config.model.is_3d,
+        alpha=config.training.tversky_alpha,
+        beta=config.training.tversky_beta,
+        smooth=config.training.tversky_smooth,
         )
     else:
         raise ValueError(config.training.loss)

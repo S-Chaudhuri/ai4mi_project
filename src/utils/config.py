@@ -103,6 +103,11 @@ class ModelConfig:
     # Temperature applied to the logits before softmax (1 = no scaling).
     temperature: float = 1.0
 
+    # Use deep supervision: the model returns a list of outputs at different
+    # resolutions, and the loss is computed on all of them. This is only
+    # supported by UNet3D and VNet3D, and is off by default.
+    deep_supervision: bool = False
+
 
 @dataclass
 class TrainingConfig:
@@ -141,10 +146,18 @@ class TrainingConfig:
     mode: Literal["partial", "full"] = "full"
 
     # Loss function to use.
-    loss: Literal["ce", "dice_ce"] = "ce"
+    loss: Literal["ce", "dice_ce", "tversky"] = "ce"
 
     # Weight of the dice term when loss is "dice_ce".
     dice_weight: float = 1.0
+
+    # Tversky: alpha weights FP; beta weights FN.
+    tversky_alpha: float = 0.3
+    tversky_beta: float = 0.7
+    tversky_smooth: float = 1e-6
+
+    # Weight of the Tversky term when loss is "tversky_ce".
+    tversky_weight: float = 1.0
 
 
 @dataclass

@@ -29,6 +29,8 @@ MODEL=${1:-UNet3D}
 shift
 CHANNELS=${CHANNELS:-1}
 DATASET=SEGTHOR_3D_${CHANNELS}ch
+LOSS=${LOSS:-dice_ce}
+DEEP_SUPERVISION=${DEEP_SUPERVISION:-False}
 
 # Stream both datasets to the node's NVMe: the .npy volumes for training, the
 # raw NIfTIs for evaluation (scored against the original GT.nii.gz)
@@ -38,6 +40,12 @@ tar -xf "$TARS/segthor_train_full.tar" -C "$TMPDIR"
 
 export PATH="$HOME/.local/bin:$PATH"
 cd /home/scur0088/project
+
+DS_ARGS=()
+
+if [[ "$DEEP_SUPERVISION" == "True" ]]; then
+    DS_ARGS+=(--model.deep_supervision)
+fi
 
 # Run python with -O to turn off asserts
 uv run python -O src/train.py \
@@ -49,4 +57,6 @@ uv run python -O src/train.py \
   --model.is_3d \
   --dataset.box_size 132 132 128 \
   --dataset.fg_prob 0.7 \
+  --training.loss "$LOSS" \
+  "${DS_ARGS[@]}" \
   "$@"

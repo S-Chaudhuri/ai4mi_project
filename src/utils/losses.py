@@ -76,3 +76,46 @@ class CrossEntropyPlusDice:
         return self.ce(pred_softmax, weak_target) + self.dice_weight * self.dice(
             pred_softmax, weak_target
         )
+
+class TverskyLoss:
+    def __init__(self, *, idk, is_3d=True, alpha=0.3, beta=0.7, smooth=1e-6, **kwargs):
+        self.idk = idk
+        self.dims = (2, 3, 4) if is_3d else (2, 3)
+        self.alpha = alpha
+        self.beta = beta
+        self.smooth = smooth
+        print(f"Initialized {self.__class__.__name__} with idk={idk}, is_3d={is_3d}")
+
+    def __call__(self, pred_softmax, weak_target):
+        p = pred_softmax[:, self.idk, ...].float()
+        g = weak_target[:, self.idk, ...].float()
+
+        tp = (p * g).sum(dim=self.dims)
+        fp = (p * (1 - g)).sum(dim=self.dims)
+        fn = ((1 - p) * g).sum(dim=self.dims)
+
+        tversky_score = (tp + self.smooth) / (
+            tp + self.alpha * fp + self.beta * fn + self.smooth
+        )
+        loss = 1 - tversky_score.mean()
+        return loss
+
+class DeepSupervisionLoss:
+    def __init__(self, *, loss):
+        self.loss = loss
+        print(f"Initialized {self.__class__.__name__}")
+
+    def __call__(self, pred_softmax, weak_target):
+        if not isinstance(pred_softmax, (list, tuple)):
+            return self.loss(pred_softmax, weak_target)
+
+        weights = [0.5 ** i for i in range(len(pred_softmax))]
+        loss = 0
+        for p, weight in zip(pred_softmax, weights):
+            g = weak_target
+            if p.shape[2:] != g.shape[2:]:
+                g = F.interpolate(
+                    g.float(), size=p.shape[2:], mode="nearest"
+                ).to(weak_target.dtype)
+            loss = loss + weight * self.loss(p, g)
+        return loss / sum(weights)
