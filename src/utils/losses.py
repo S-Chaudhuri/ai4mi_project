@@ -98,3 +98,23 @@ class TverskyLoss:
         )
         loss = 1 - tversky_score.mean()
         return loss
+
+class DeepSupervisionLoss:
+    def __init__(self, *, loss):
+        self.loss = loss
+        print(f"Initialized {self.__class__.__name__}")
+
+    def __call__(self, pred_softmax, weak_target):
+        if not isinstance(pred_softmax, (list, tuple)):
+            return self.loss(pred_softmax, weak_target)
+
+        weights = [0.5 ** i for i in range(len(pred_softmax))]
+        loss = 0
+        for p, weight in zip(pred_softmax, weights):
+            g = weak_target
+            if p.shape[2:] != g.shape[2:]:
+                g = F.interpolate(
+                    g.float(), size=p.shape[2:], mode="nearest"
+                ).to(weak_target.dtype)
+            loss = loss + weight * self.loss(p, g)
+        return loss / sum(weights)

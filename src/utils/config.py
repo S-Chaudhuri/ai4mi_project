@@ -86,6 +86,10 @@ class ModelConfig:
     # Temperature applied to the logits before softmax (1 = no scaling).
     temperature: float = 1.0
 
+    # Add decoder predictions for deep-supervision. If True, the model returns a list of outputs: 
+    # the final output and the auxiliary outputs from intermediate decoder stages.
+    deep_supervision: bool = False
+
 
 @dataclass
 class TrainingConfig:

@@ -49,6 +49,7 @@ class UNet3D(nn.Module):
         dropoutRate: float = 0.01,
         pool_kernels: Sequence[tuple[int, int, int]] = ((2, 2, 2), (2, 2, 2)),
         max_channels: int = 256,
+        deep_supervision: bool = False,
         **kwargs,
     ):
         """
@@ -60,6 +61,7 @@ class UNet3D(nn.Module):
                       avoid pooling the z axis.
         """
         super().__init__()
+        self.deep_supervision = deep_supervision
         self.pool_kernels = [tuple(k) for k in pool_kernels]
         chans = [
             min(kernels * factor**i, max_channels)
@@ -84,6 +86,10 @@ class UNet3D(nn.Module):
         )
 
         self.final = nn.Conv3d(chans[0], out_dim, kernel_size=1)
+        self.aux_heads = nn.ModuleList(
+            nn.Conv3d(chans[i], out_dim, kernel_size=1)
+            for i in reversed(range(1, len(chans) - 1))
+        ) if deep_supervision else nn.ModuleList()
 
     def forward(self, x: Tensor) -> Tensor:
         skips: list[Tensor] = []
@@ -94,10 +100,18 @@ class UNet3D(nn.Module):
 
         x = self.bottleneck(x)
 
+        auxiliary: list[Tensor] = []
+
         for dec, skip in zip(self.decoders, reversed(skips)):
             x = dec(x, skip)
+            if self.deep_supervision and i < len(self.aux_heads):
+                auxiliary.append(self.aux_heads[i](x))
 
-        return self.final(x)
+            final = self.final(x)
+        if self.deep_supervision:
+            return [final, *reversed(auxiliary)]
+        return final
+
 
     def init_weights(self, *args, **kwargs):
         def _init(m: nn.Module):

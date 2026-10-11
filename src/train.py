@@ -73,7 +73,8 @@ from src.utils.utils import (
 from src.utils.losses import (
     CrossEntropy,
     CrossEntropyPlusDice,
-    TverskyLoss
+    TverskyLoss, 
+    DeepSupervisionLoss
 )
 
 
@@ -367,13 +368,13 @@ def get_loss_func(config: Config):
             is_3d=config.model.is_3d,
             dice_weight=config.training.dice_weight,
         )
-        elif config.training.loss == "tversky":
-            return TverskyLoss(
-            idk=foreground_idk,
-            is_3d=config.model.is_3d,
-            alpha=config.training.tversky_alpha,
-            beta=config.training.tversky_beta,
-            smooth=config.training.tversky_smooth,
+    elif config.training.loss == "tversky":
+        return TverskyLoss(
+        idk=foreground_idk,
+        is_3d=config.model.is_3d,
+        alpha=config.training.tversky_alpha,
+        beta=config.training.tversky_beta,
+        smooth=config.training.tversky_smooth,
         )
     else:
         raise ValueError(config.training.loss)
