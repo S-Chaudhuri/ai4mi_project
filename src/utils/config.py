@@ -1,4 +1,5 @@
 import argparse
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
@@ -23,6 +24,10 @@ class PathConfig:
     # If None, defaults to results/<Dataset>/<timestamp>.
     # Guaranteed to be a path if gotten through get_config
     results_dir: Optional[Path] = None
+
+    # Raw NIfTI dataset under data_path holding the original GT.nii.gz files,
+    # which 3D evaluation scores against (the .npy datasets have no NIfTIs).
+    raw_dataset: str = "segthor_train_full"
 
 
 @dataclass
@@ -60,6 +65,13 @@ class DatasetConfig:
     # coarse is True.
     coarse_size: tuple[int, int, int] = (64, 64, 64)
 
+    use_coords: bool = False
+
+    # Train on the original patients only: leave out the offline-augmented
+    # copies (Patient_XXa1, Patient_XXa2, ...) of the training set, e.g. for
+    # baselines. Validation has no augmented copies either way.
+    skip_augmented: bool = False
+
 
 @dataclass
 class ModelConfig:
@@ -74,6 +86,11 @@ class ModelConfig:
     # UNet3D/VNet3D/ResUNet3D/MedNeXt3D are 3D.
     is_3d: bool = False
 
+    # Input channels of the 3D models: 1 for SEGTHOR_3D_1ch (soft-tissue HU
+    # window), 3 for SEGTHOR_3D_3ch (soft-tissue, lung and blood windows).
+    # Must match the dataset; training and evaluation check this.
+    in_channels: int = 1
+
     # Number of kernels in the first convolutional layer (doubles per stage).
     kernels: int = 8
 
@@ -85,6 +102,11 @@ class ModelConfig:
 
     # Temperature applied to the logits before softmax (1 = no scaling).
     temperature: float = 1.0
+
+    # Use deep supervision: the model returns a list of outputs at different
+    # resolutions, and the loss is computed on all of them. This is only
+    # supported by UNet3D and VNet3D, and is off by default.
+    deep_supervision: bool = False
 
 
 @dataclass
@@ -388,6 +410,32 @@ def _load_config_file():
     return {}, remaining_argv
 
 
+def _new_results_dir(config: Config) -> Path:
+    """results/<dataset>/<model>_<timestamp>[_job<SLURM_JOB_ID>], created here.
+
+    Runs used to share a folder when two jobs on the same dataset started in
+    the same second, and then overwrote each other's bestweights.pt. The model
+    name and Slurm job id make the name unique per run; creating the folder
+    with exist_ok=False (atomic) and moving on to _1, _2, ... covers any run
+    that still lands on the same name, e.g. local runs without Slurm.
+    """
+    stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    name = f"{config.model.name}_{stamp}"
+    if job_id := os.environ.get("SLURM_JOB_ID"):
+        name += f"_job{job_id}"
+    base = Path("results") / config.dataset.name / name
+
+    base.parent.mkdir(parents=True, exist_ok=True)
+    results_dir, i = base, 1
+    while True:
+        try:
+            results_dir.mkdir()
+            return results_dir
+        except FileExistsError:
+            results_dir = base.with_name(f"{base.name}_{i}")
+            i += 1
+
+
 def get_config() -> Config:
     yaml_dict, remaining_argv = _load_config_file()
 
@@ -407,9 +455,9 @@ def get_config() -> Config:
         f"{config.dataset.name}-{config.model.name}"
     )
 
-    config.paths.results_dir = config.paths.results_dir or Path(
-        f"results/{config.dataset.name}/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
-    )
-    config.paths.results_dir.mkdir(parents=True, exist_ok=True)
+    if config.paths.results_dir is None:
+        config.paths.results_dir = _new_results_dir(config)
+    else:
+        config.paths.results_dir.mkdir(parents=True, exist_ok=True)
 
     return config

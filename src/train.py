@@ -69,6 +69,8 @@ from src.utils.utils import (
 from src.utils.losses import (
     CrossEntropy,
     CrossEntropyPlusDice,
+    TverskyLoss, 
+    DeepSupervisionLoss
 )
 
 
@@ -92,16 +94,23 @@ def gt_transform_2d(K, img):
     return img[0]
 
 
+# def img_transform_3d(vol: np.ndarray) -> Tensor:
+#     """
+#     Input:  vol is a uint8 3D numpy array (box or volume) with shape (D, H, W)
+#     Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
+#     """
+#     vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
+#     tensor = torch.from_numpy(vol)
+#     if tensor.ndim == 3:
+#         tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
+#     return tensor
 def img_transform_3d(vol: np.ndarray) -> Tensor:
-    """
-    Input:  vol is a uint8 3D numpy array (box or volume) with shape (D, H, W)
-    Output: 4D float Tensor with shape (1, D, H, W) normalized to [0, 1]
-    """
-    vol = vol.astype(np.float32) / 255.0  # Normalize PNG values to [0, 1]
-    tensor = torch.from_numpy(vol)
-    if tensor.ndim == 3:
-        tensor = tensor.unsqueeze(0)  # Shape: (1, D, H, W)
-    return tensor
+    """(C, D, H, W) or (D, H, W) -> float (C, D, H, W). Integers are scaled by 255; floats are
+    assumed to be normalised to [0, 1] already."""
+    t = torch.from_numpy(vol.astype(np.float32))
+    if np.issubdtype(vol.dtype, np.integer):
+        t = t / 255.0
+    return t.unsqueeze(0) if t.ndim == 3 else t
 
 
 def gt_transform_3d(K: int, vol: np.ndarray) -> Tensor:
@@ -147,7 +156,7 @@ def get_model(config: Config):
                 f"is_3d=True requires a 3D model {list(models_3d)}, got {config.model.name!r}"
             )
         return models_3d[config.model.name](
-            1,
+            config.model.in_channels,
             num_classes,
             kernels=kernels,
             factor=factor,
@@ -161,7 +170,7 @@ def get_model(config: Config):
             factor=factor,
             dropoutRate=config.model.dropout,
         )
-    elif config.model.name == "shallowCNN":
+    elif config.model.name == "ShallowNet":  # the name config.model.name accepts
         return shallowCNN(
             1,
             num_classes,
@@ -173,12 +182,39 @@ def get_model(config: Config):
         raise ValueError(f"Unknown model.name {config.model.name!r} for is_3d=False")
 
 
+def check_in_channels(dataset: Dataset, config: Config) -> None:
+    """Fail early when the volumes' channel count differs from model.in_channels
+    (e.g. SEGTHOR_3D_3ch with in_channels 1), instead of inside the first conv."""
+    items = getattr(dataset, "items", None)
+    if not items or "img_vol" not in items[0]:
+        return
+    data_channels = items[0]["img_vol"].shape[0]  # volumes are (C, D, H, W)
+    if data_channels != config.model.in_channels:
+        raise ValueError(
+            f"{config.dataset.name} has {data_channels} channel(s) but "
+            f"model.in_channels is {config.model.in_channels}: "
+            f"pass --model.in_channels {data_channels}"
+        )
+
+
 def build_dataloaders(config: Config):
 
     # Dataset part
     batch_size = config.training.batch_size
     num_classes = config.dataset.num_classes
     data_root_dir = config.paths.data_path / config.dataset.name
+
+    print(f"Dataset root: {data_root_dir}")
+    print(f"Dataset root exists: {data_root_dir.is_dir()}")
+
+    train_dir = data_root_dir / "train"
+    print(f"Training directory: {train_dir}")
+    print(f"Training directory exists: {train_dir.is_dir()}")
+
+    if train_dir.is_dir():
+        patients = sorted(train_dir.glob("Patient_*"))
+        print(f"Patient directories found: {len(patients)}")
+        print(f"First few patients: {patients[:5]}")
 
     dataset_cls: type[Dataset]
     val_dataset_cls: type[Dataset]  # NEW: validation can use another class
@@ -209,6 +245,9 @@ def build_dataloaders(config: Config):
         img_transform = img_transform_2d
         gt_transform = partial(gt_transform_2d, num_classes)
 
+    # Original patients only (no offline-augmented copies), training set only
+    train_kwargs["skip_augmented"] = config.dataset.skip_augmented
+
     # Online intensity augmentation wraps the image transform, so only the
     # training set sees it; val_set below keeps the plain one.
     train_img_transform = make_img_transform(img_transform, config.augmentation)
@@ -222,6 +261,9 @@ def build_dataloaders(config: Config):
         **dataset_kwargs,
         **train_kwargs,  # NEW
     )
+    print(f"Training dataset length: {len(train_set)}")
+    if config.model.is_3d:
+        check_in_channels(train_set, config)
 
     # NEW: for 3D, an epoch is a fixed number of random batches (drawn with replacement)
     train_loader_kwargs: dict[str, Any]
@@ -325,6 +367,14 @@ def get_loss_func(config: Config):
             dice_idk=dice_idk,
             is_3d=config.model.is_3d,
             dice_weight=config.training.dice_weight,
+        )
+    elif config.training.loss == "tversky":
+        return TverskyLoss(
+        idk=foreground_idk,
+        is_3d=config.model.is_3d,
+        alpha=config.training.tversky_alpha,
+        beta=config.training.tversky_beta,
+        smooth=config.training.tversky_smooth,
         )
     else:
         raise ValueError(config.training.loss)

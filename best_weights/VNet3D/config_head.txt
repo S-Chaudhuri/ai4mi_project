@@ -1,0 +1,90 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
+wandb: Currently logged in as: jonkerluuk06 (ai-for-medical-imaging) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.30.0
+wandb: Run data is saved locally in /gpfs/home3/scur0088/project/results/wandb/wandb/run-20261011_000246-2vy3oxxl
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run smooth-resonance-43
+wandb: ⭐️ View project at https://wandb.ai/ai-for-medical-imaging/SEGTHOR-3D
+wandb: 🚀 View run at https://wandb.ai/ai-for-medical-imaging/SEGTHOR-3D/runs/2vy3oxxl
+wandb: Generating checksum for up to 10000000 files in '/scratch-node/scur0088.27859635/SEGTHOR_3D_1ch'... Done. 5.1s
+{'augmentation': {'contrast_prob': 0.3,
+                  'contrast_range': (0.8, 1.25),
+                  'enabled': False,
+                  'gamma_prob': 0.3,
+                  'gamma_range': (0.7, 1.5),
+                  'noise_level': 0.05,
+                  'noise_prob': 0.5},
+ 'dataset': {'box_size': (132, 132, 128),
+             'coarse': False,
+             'coarse_size': (64, 64, 64),
+             'fg_prob': 0.7,
+             'fold': 0,
+             'name': 'SEGTHOR_3D_1ch',
+             'num_classes': 5,
+             'retains': 5,
+             'shape': (256, 256),
+             'skip_augmented': True,
+             'use_coords': False},
+ 'eval': {'enabled': True,
+          'overlap': 0.5,
+          'patient_id': None,
+          'postprocess': ('lcc',),
+          'split': 'val',
+          'submission': True,
+          'weights': None},
+ 'model': {'dropout': 0.01,
+           'factor': 2,
+           'in_channels': 1,
+           'is_3d': True,
+           'kernels': 16,
+           'name': 'VNet3D',
+           'temperature': 1.0},
+ 'paths': {'data_path': PosixPath('/scratch-node/scur0088.27859635'),
+           'raw_dataset': 'segthor_train_full',
+           'results_dir': PosixPath('results/SEGTHOR_3D_1ch/11-10-2026_00-02-46')},
+ 'profiler': {'active': 3,
+              'enabled': False,
+              'output_dir': None,
+              'profile_memory': False,
+              'record_shapes': False,
+              'wait': 1,
+              'warmup': 1,
+              'with_flops': False,
+              'with_modules': False,
+              'with_stack': False},
+ 'runtime': {'amp_dtype': 'bf16',
+             'cudnn_benchmark': False,
+             'debug': False,
+             'hd95_in_train': False,
+             'hd95_interval': 5,
+             'num_workers': 8},
+ 'training': {'batch_size': 8,
+              'batches_per_epoch': 100,
+              'betas': (0.9, 0.999),
+              'dice_weight': 1.0,
+              'epochs': 50,
+              'gpu': True,
+              'loss': 'dice_ce',
+              'lr': 0.0005,
+              'mode': 'full',
+              'scheduler': 'cosine',
+              'seed': 42,
+              'weight_decay': 0.005},
+ 'wandb': {'dir': None,
+           'entity': 'ai-for-medical-imaging',
+           'notes': 'First run of 3D models on SEGTHOR dataset. Using UNet3D, '
+                    'ResUNet3D, VNet3D, and MedNeXt3D architectures. Training '
+                    'for 50 epochs with batch size of 8 and learning rate of '
+                    '0.0005. Using cosine scheduler and dice_ce loss function. '
+                    'Weight decay set to 0.005. Evaluation enabled with '
+                    'submission generation.',
+           'project': 'SEGTHOR-3D',
+           'store_artifect': True,
+           'watch': False}}
+>>> Setting up to train on SEGTHOR_3D_1ch (3D) with full
+>> Picked cuda to run experiments
+Dataset root: /scratch-node/scur0088.27859635/SEGTHOR_3D_1ch
+Dataset root exists: True
+Training directory: /scratch-node/scur0088.27859635/SEGTHOR_3D_1ch/train
+Training directory exists: True
+Patient directories found: 105

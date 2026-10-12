@@ -1,0 +1,443 @@
+# MIT License
+
+# Copyright (c) 2025 Hoel Kervadec
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from pathlib import Path
+from functools import partial
+from multiprocessing import Pool
+from contextlib import AbstractContextManager
+from typing import Callable, Iterable, List, Set, Tuple, TypeVar, cast
+
+import torch
+import numpy as np
+import random
+import pickle
+import re
+from PIL import Image
+from tqdm import tqdm
+from torch import Tensor, einsum
+from scipy import ndimage
+from scipy.spatial import cKDTree
+
+
+tqdm_ = partial(
+    tqdm,
+    dynamic_ncols=True,
+    leave=True,
+    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{rate_fmt}{postfix}]",
+)
+
+
+class Dcm(AbstractContextManager):
+    # Dummy Context manager
+    def __exit__(self, *args, **kwargs):
+        pass
+
+
+# Functools
+A = TypeVar("A")
+B = TypeVar("B")
+
+
+def seed_all(seed: int, gpu: bool = False, cudnn_benchmark: bool = False):
+    torch.manual_seed(seed)
+    if gpu:
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = not cudnn_benchmark
+    torch.backends.cudnn.benchmark = cudnn_benchmark
+
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def class_index_to_name(index: int):
+    match index:
+        case 0:
+            return "bg"
+        case 1:
+            return "esophagus"
+        case 2:
+            return "heart"
+        case 3:
+            return "trachea"
+        case 4:
+            return "aorta"
+        case _:
+            raise NotImplementedError(f"class_index_to_name with index: {index}")
+
+
+# Assert utils
+def uniq(a: Tensor) -> Set:
+    return set(torch.unique(a.cpu()).numpy())
+
+
+def sset(a: Tensor, sub: Iterable) -> bool:
+    return uniq(a).issubset(sub)
+
+
+def eq(a: Tensor, b) -> bool:
+    return bool(torch.eq(a, b).all())
+
+
+def simplex(t: Tensor, axis=1) -> bool:
+    _sum = cast(Tensor, t.sum(axis).type(torch.float32))
+    _ones = torch.ones_like(_sum, dtype=torch.float32)
+    return torch.allclose(_sum, _ones)
+
+
+def one_hot(t: Tensor, axis=1) -> bool:
+    return simplex(t, axis) and sset(t, [0, 1])
+
+
+def class2one_hot(seg: Tensor, K: int) -> Tensor:
+    # Breaking change but otherwise can't deal with both 2d and 3d
+    # if len(seg.shape) == 3:  # Only w, h, d, used by the dataloader
+    #     return class2one_hot(seg.unsqueeze(dim=0), K)[0]
+
+    assert sset(seg, list(range(K))), (uniq(seg), K)
+
+    b, *img_shape = seg.shape
+
+    device = seg.device
+    res = torch.zeros((b, K, *img_shape), dtype=torch.int32, device=device).scatter_(
+        1, seg[:, None, ...], 1
+    )
+
+    assert res.shape == (b, K, *img_shape)
+    assert one_hot(res)
+
+    return res
+
+
+def probs2class(probs: Tensor) -> Tensor:
+    b, _, *img_shape = probs.shape
+    assert simplex(probs)
+
+    # max(dim=1).indices instead of argmax: same result, but argmax on high-dim
+    # tensors hits a very slow kernel path on CPU (seconds vs milliseconds).
+    res = probs.max(dim=1).indices
+    assert res.shape == (b, *img_shape)
+
+    return res
+
+
+def probs2one_hot(probs: Tensor) -> Tensor:
+    _, K, *_ = probs.shape
+    assert simplex(probs)
+
+    res = class2one_hot(probs2class(probs), K)
+    assert res.shape == probs.shape
+    assert one_hot(res)
+
+    return res
+
+
+# Save the raw predictions
+def save_images(segs: Tensor, names: Iterable[str], root: Path) -> None:
+    for seg, name in zip(segs, names):
+        save_path = (root / name).with_suffix(".png")
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if len(seg.shape) == 2:
+            Image.fromarray(seg.detach().cpu().numpy().astype(np.uint8)).save(save_path)
+        elif len(seg.shape) == 3:
+            np.save(str(save_path), seg.detach().cpu().numpy())
+        else:
+            raise ValueError(seg.shape)
+
+
+# Metrics
+def meta_dice(
+    sum_str: str, label: Tensor, pred: Tensor, smooth: float = 1e-8
+) -> Tensor:
+    assert label.shape == pred.shape
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    inter_size: Tensor = einsum(sum_str, [intersection(label, pred)]).type(
+        torch.float32
+    )
+    sum_sizes: Tensor = (einsum(sum_str, [label]) + einsum(sum_str, [pred])).type(
+        torch.float32
+    )
+
+    dices: Tensor = (2 * inter_size + smooth) / (sum_sizes + smooth)
+
+    return dices
+
+
+dice_coef = partial(meta_dice, "bk...->bk")
+dice_batch = partial(meta_dice, "bk...->k")  # used for 3d dice
+
+
+def masked_mean(dice: Tensor, present: Tensor) -> Tensor:
+    # Mean of the dice values over where the class is actually present in gt
+    assert dice.shape == present.shape
+    return dice.masked_fill(~present, 0.0).sum() / present.sum().clamp(min=1)
+
+
+def intersection(a: Tensor, b: Tensor) -> Tensor:
+    assert a.shape == b.shape
+    assert sset(a, [0, 1])
+    assert sset(b, [0, 1])
+
+    res = a & b
+    assert sset(res, [0, 1])
+
+    return res
+
+
+def union(a: Tensor, b: Tensor) -> Tensor:
+    assert a.shape == b.shape
+    assert sset(a, [0, 1])
+    assert sset(b, [0, 1])
+
+    res = a | b
+    assert sset(res, [0, 1])
+
+    return res
+
+
+# distance-based metrics
+
+
+def _surface_voxels(mask: np.ndarray) -> np.ndarray:
+    return mask ^ ndimage.binary_erosion(mask)
+
+
+def _surface_coords(mask: np.ndarray, spacing_mm: tuple) -> Tensor:
+    spacing = torch.tensor(spacing_mm, dtype=torch.float32)
+    coords = torch.from_numpy(np.argwhere(_surface_voxels(mask))).float()
+    return coords * spacing
+
+
+def _asymmetric_distance(a_coords: Tensor, b_coords: Tensor) -> Tensor:
+    a = a_coords.numpy().astype(np.float64)
+    b = b_coords.numpy().astype(np.float64)
+    dist, _ = cKDTree(b).query(a, k=1)
+    return torch.from_numpy(dist.astype(np.float32))
+
+
+def _max_distance(shape: tuple[int, ...], spacing_mm: tuple) -> float:
+    # Worst-case distance between two surfaces: the diagonal of the volume, in mm
+    dims = np.asarray(shape[: len(spacing_mm)], dtype=np.float64)
+    spacing = np.asarray(spacing_mm, dtype=np.float64)
+    return float(np.linalg.norm(dims * spacing))
+
+
+def hausdorff_distance(
+    a: np.ndarray, b: np.ndarray, spacing_mm: tuple, percentile: float
+) -> float:
+    a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
+    if len(a_coords) == 0 or len(b_coords) == 0:
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
+
+    dist_ab = _asymmetric_distance(a_coords, b_coords)
+    dist_ba = _asymmetric_distance(b_coords, a_coords)
+
+    if percentile >= 100.0:
+        return torch.max(dist_ab.max(), dist_ba.max()).item()
+
+    q = percentile / 100.0
+    return torch.max(torch.quantile(dist_ab, q), torch.quantile(dist_ba, q)).item()
+
+
+def average_hausdorff_distance(
+    a: np.ndarray, b: np.ndarray, spacing_mm: tuple
+) -> float:
+    a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
+    if len(a_coords) == 0 or len(b_coords) == 0:
+        # One surface is empty: report the worst possible (finite) distance
+        # instead of inf, so means over samples/classes stay well-defined
+        return _max_distance(a.shape, spacing_mm)
+
+    dist_ab = _asymmetric_distance(a_coords, b_coords)
+    dist_ba = _asymmetric_distance(b_coords, a_coords)
+
+    return ((dist_ab.mean() + dist_ba.mean()) / 2.0).item()
+
+
+def normalized_surface_distance(
+    a: np.ndarray, b: np.ndarray, spacing_mm: tuple, tau_mm: float
+) -> float:
+    """
+    NSD within border of size tau_mm (tolerance in mm) of the other surface.
+    """
+    a_coords, b_coords = _surface_coords(a, spacing_mm), _surface_coords(b, spacing_mm)
+    if len(a_coords) == 0 or len(b_coords) == 0:
+        return float("nan")
+
+    dist_ab = _asymmetric_distance(a_coords, b_coords)
+    dist_ba = _asymmetric_distance(b_coords, a_coords)
+
+    within_ab = (dist_ab <= tau_mm).sum()
+    within_ba = (dist_ba <= tau_mm).sum()
+
+    return ((within_ab + within_ba).float() / (len(a_coords) + len(b_coords))).item()
+
+
+def meta_hausdorff(
+    percentile: float, label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
+) -> Tensor:
+    b, k, *_ = label.shape
+    res = torch.zeros((b, k), dtype=torch.float32)
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    present = label_np.any(axis=tuple(range(2, label_np.ndim)))  # (b, k)
+
+    for i in range(b):
+        # j=0 is background: never reported, and its "surface" (the box
+        # boundary) is the most expensive pair to measure.
+        for j in range(1, k):
+            # Class absent from the gt: keep 0.0. Every reported HD95 mean is
+            # masked by gt-presence, so these pairs never affect a reported
+            # value, and skipping avoids the worst-case-distance work.
+            if not present[i, j]:
+                continue
+            res[i, j] = hausdorff_distance(
+                label_np[i, j], pred_np[i, j], spacing_mm, percentile
+            )
+
+    return res
+
+
+hausdorff_coef = partial(meta_hausdorff, 100.0)
+hd95_coef = partial(meta_hausdorff, 95.0)
+
+
+def meta_average_hausdorff(
+    label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
+) -> Tensor:
+    assert label.shape == pred.shape
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    b, k, *_ = label.shape
+    res = torch.zeros((b, k), dtype=torch.float32)
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    for i in range(b):
+        for j in range(k):
+            res[i, j] = average_hausdorff_distance(
+                label_np[i, j], pred_np[i, j], spacing_mm
+            )
+
+    return res
+
+
+ahd_coef = meta_average_hausdorff
+
+
+def meta_normalized_surface_distance(
+    tau_mm: float, label: Tensor, pred: Tensor, spacing_mm: tuple = (1, 1, 1)
+) -> Tensor:
+    assert label.shape == pred.shape
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    b, k, *_ = label.shape
+    res = torch.zeros((b, k), dtype=torch.float32)
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    for i in range(b):
+        for j in range(k):
+            res[i, j] = normalized_surface_distance(
+                label_np[i, j], pred_np[i, j], spacing_mm, tau_mm
+            )
+
+    return res
+
+
+nsd_coef = partial(
+    meta_normalized_surface_distance, 2.0
+)  # 2mm tolerance — set per organ
+
+
+# Overlap-based metrics
+
+
+def boundary_iou(a: np.ndarray, b: np.ndarray, dilation: int = 2) -> float:
+    a_boundary = a ^ ndimage.binary_erosion(a, iterations=dilation)
+    b_boundary = b ^ ndimage.binary_erosion(b, iterations=dilation)
+
+    inter = (a_boundary & b_boundary).sum()
+    uni = (a_boundary | b_boundary).sum()
+
+    if uni == 0:
+        return float("nan")
+
+    return inter / uni
+
+
+def meta_boundary_iou(dilation: int, label: Tensor, pred: Tensor) -> Tensor:
+    assert label.shape == pred.shape
+    assert one_hot(label)
+    assert one_hot(pred)
+
+    b, k, *_ = label.shape
+    res = torch.zeros((b, k), dtype=torch.float32)
+
+    label_np = label.detach().cpu().numpy().astype(bool)
+    pred_np = pred.detach().cpu().numpy().astype(bool)
+
+    for i in range(b):
+        for j in range(k):
+            res[i, j] = boundary_iou(label_np[i, j], pred_np[i, j], dilation)
+
+    return res
+
+
+biou_coef = partial(
+    meta_boundary_iou, 2
+)  # boundary band width in voxels — tune per organ scale
+
+
+def deep_update(base_dict: dict, update_dict: dict) -> dict:
+    for key, value in update_dict.items():
+        if (
+            isinstance(value, dict)
+            and key in base_dict
+            and isinstance(base_dict[key], dict)
+        ):
+            deep_update(base_dict[key], value)
+        else:
+            base_dict[key] = value
+    return base_dict
+
+
+def load_spacing(data_root, png_hw=256, orig_hw=512):
+    """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
+    with open(Path(data_root) / "spacing.pkl", "rb") as f:
+        raw = pickle.load(f)  # id -> (dx, dy, dz) of the original CT
+    s = orig_hw / png_hw
+    return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
+
+
+def patient_key(stem):  # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"
+    return re.sub(r"a\d+$", "", "_".join(stem.split("_")[:2]))

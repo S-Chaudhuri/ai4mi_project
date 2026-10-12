@@ -31,6 +31,7 @@ import numpy as np
 import random
 import pickle
 import re
+import json
 from PIL import Image
 from tqdm import tqdm
 from torch import Tensor, einsum
@@ -431,12 +432,25 @@ def deep_update(base_dict: dict, update_dict: dict) -> dict:
     return base_dict
 
 
-def load_spacing(data_root, png_hw=256, orig_hw=512):
-    """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
-    with open(Path(data_root) / "spacing.pkl", "rb") as f:
-        raw = pickle.load(f)  # id -> (dx, dy, dz) of the original CT
-    s = orig_hw / png_hw
-    return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
+# def load_spacing(data_root, png_hw=256, orig_hw=512):
+#     """patient id -> (dz, dy, dx) in mm at PNG resolution (volume axes are D,H,W)."""
+#     with open(Path(data_root) / "spacing.pkl", "rb") as f:
+#         raw = pickle.load(f)  # id -> (dx, dy, dz) of the original CT
+#     s = orig_hw / png_hw
+#     return {k: (dz, dx * s, dy * s) for k, (dx, dy, dz) in raw.items()}
+
+def load_spacing(data_root, subsets=("train", "val", "test"), key="spacing_zyx"):
+    """patient dir name -> spacing (mm) per axis of the STORED array, in the array's axis order.
+    Reads <data_root>/<subset>/<Patient>/meta.json."""
+    out = {}
+    for sub in subsets:
+        for meta in sorted((Path(data_root) / sub).glob("Patient_*/meta.json")):
+            with open(meta) as f:
+                m = json.load(f)
+            if key not in m:
+                raise KeyError(f"{meta}: no '{key}'. Keys present: {list(m)}")
+            out[meta.parent.name] = tuple(float(v) for v in m[key])
+    return out
 
 
 def patient_key(stem):  # "Patient_01_d0_h0_w0" / "Patient_01a1" -> "Patient_01"

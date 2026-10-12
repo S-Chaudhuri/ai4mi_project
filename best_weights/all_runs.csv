@@ -1,0 +1,17 @@
+model,val_dice,epoch,log,weights
+UNet3D,0.841,44,/home/scur0088/project/logs/UNet3D_base/27859633/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/11-10-2026_00-02-13/bestweights.pt
+ResUNet3D,0.837,26,/home/scur0088/project/logs/ResUNet3D_base/27859636/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/11-10-2026_00-02-46/bestweights.pt
+ResUNet3D,0.836,27,/home/scur0088/project/logs/ResUNet3D_base/27878584/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/ResUNet3D_11-10-2026_13-26-51_job27878584/bestweights.pt
+MedNeXt3D,0.835,40,/home/scur0088/project/logs/MedNeXt3D_base/27859637/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/11-10-2026_00-21-01/bestweights.pt
+VNet3D,0.828,39,/home/scur0088/project/logs/VNet3D_base/27859635/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/11-10-2026_00-02-46/bestweights.pt
+ENet,0.647,38,/home/scur0088/project/logs/ENet_base/27859638/out.log,/home/scur0088/project/results/SEGTHOR/11-10-2026_00-20-59/bestweights.pt
+UNet3D,0.19,42,/home/scur0088/project/logs/out_27864787.log,/home/scur0088/project/results/segthor_3d_cpu_%j/bestweights.pt
+UNet3D,0.09,0,/home/scur0088/project/logs/test/27859414/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/10-10-2026_23-45-12/bestweights.pt
+ShallowNet,0.022,44,/home/scur0088/project/logs/ShallowNet_base/27878585/out.log,/home/scur0088/project/results/SEGTHOR/ShallowNet_11-10-2026_13-26-51_job27878585/bestweights.pt
+ShallowNet,0.022,44,/home/scur0088/project/logs/ShallowNet_base/27859639/out.log,/home/scur0088/project/results/SEGTHOR/11-10-2026_00-20-59/bestweights.pt
+UNet3D,0.007,2,/home/scur0088/project/logs/27862276/out.log,/home/scur0088/project/results/segthor_3d_cpu_%j/bestweights.pt
+UNet3D,0.007,2,/home/scur0088/project/logs/27861894/out.log,/home/scur0088/project/results/segthor_3d_cpu_%j/bestweights.pt
+UNet3D,0.007,0,/home/scur0088/project/logs/new_logs/UNet3D/27843891/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/10-10-2026_17-00-39/bestweights.pt
+UNet3D,0.007,0,/home/scur0088/project/logs/new_logs/UNet3D/27845039/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/10-10-2026_15-24-46/bestweights.pt
+UNet3D,0.007,0,/home/scur0088/project/logs/new_logs/UNet3D/27841994/out.log,/home/scur0088/project/results/SEGTHOR_3D_1ch/10-10-2026_12-58-25/bestweights.pt
+UNet3D,0.007,2,/home/scur0088/project/logs/27861750/out.log,/home/scur0088/project/results/segthor_3d_cpu_%j/bestweights.pt
