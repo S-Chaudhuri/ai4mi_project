@@ -69,8 +69,9 @@ from src.utils.utils import (
 from src.utils.losses import (
     CrossEntropy,
     CrossEntropyPlusDice,
-    TverskyLoss, 
-    DeepSupervisionLoss
+    TverskyLoss,
+    DeepSupervisionLoss,
+    SkeletonRecallLoss,
 )
 
 
@@ -247,6 +248,15 @@ def build_dataloaders(config: Config):
 
     # Original patients only (no offline-augmented copies), training set only
     train_kwargs["skip_augmented"] = config.dataset.skip_augmented
+
+    # Skeleton Recall: the training boxes carry the GT centrelines ("skel")
+    if config.training.skeleton_weight > 0:
+        if not config.model.is_3d or config.dataset.coarse:
+            raise ValueError(
+                "training.skeleton_weight > 0 needs a 3D box dataset "
+                "(model.is_3d, not dataset.coarse)"
+            )
+        train_kwargs["skeleton_classes"] = config.training.skeleton_classes
 
     # Online intensity augmentation wraps the image transform, so only the
     # training set sees it; val_set below keeps the plain one.
@@ -456,6 +466,11 @@ def runTraining(config: Config):
         wandb.watch(net, log="all", log_freq=100)
 
     loss_fn = get_loss_func(config)
+    skeleton_loss_fn = (
+        SkeletonRecallLoss(classes=config.training.skeleton_classes)
+        if config.training.skeleton_weight > 0
+        else None
+    )
 
     # bf16 needs no GradScaler (no fp16 range issues); fp16 keeps the old
     # scaler-based behavior.
@@ -625,6 +640,13 @@ def runTraining(config: Config):
                     # Computed outside autocast: under CUDA fp16 autocast the
                     # einsum in the loss is promoted to fp16 and overflows
                     loss = loss_fn(pred_probs, gt)
+                    # Skeleton Recall on top, training only: validation keeps
+                    # the plain loss so it stays comparable across runs
+                    if opt is not None and skeleton_loss_fn is not None:
+                        skel = data["skel"].to(device, non_blocking=True)
+                        loss = loss + config.training.skeleton_weight * skeleton_loss_fn(
+                            pred_probs, skel
+                        )
                     log_loss[e, i] = loss.detach()  # One loss value per batch
 
                     if opt is not None:  # Only for training
