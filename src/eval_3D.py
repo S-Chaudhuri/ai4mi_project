@@ -59,7 +59,10 @@ def predict_volume(
                     [x, torch.from_numpy(coord_grid((D, H, W), (a, b, c), box))]
                 )
             xs.append(x)
-        probs = F.softmax(temperature * net(torch.stack(xs).to(device)).float(), dim=1)
+        out = net(torch.stack(xs).to(device))
+        if isinstance(out, (list, tuple)):
+            out = out[0]
+        probs = F.softmax(temperature * out.float(), dim=1)
         for p, (a, b, c) in zip(probs, chunk):
             prob_sum[:, a : a + d, b : b + h, c : c + w] += p * win
             w_sum[a : a + d, b : b + h, c : c + w] += win

@@ -102,13 +102,13 @@ class UNet3D(nn.Module):
 
         auxiliary: list[Tensor] = []
 
-        for dec, skip in zip(self.decoders, reversed(skips)):
+        for i, (dec, skip) in enumerate(zip(self.decoders, reversed(skips))):
             x = dec(x, skip)
-            if self.deep_supervision and i < len(self.aux_heads):
+            if self.deep_supervision and self.training and i < len(self.aux_heads):
                 auxiliary.append(self.aux_heads[i](x))
 
-            final = self.final(x)
-        if self.deep_supervision:
+        final = self.final(x)
+        if self.deep_supervision and self.training:
             return [final, *reversed(auxiliary)]
         return final
 

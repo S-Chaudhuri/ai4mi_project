@@ -260,7 +260,7 @@ def hausdorff_distance(
         return torch.max(dist_ab.max(), dist_ba.max()).item()
 
     q = percentile / 100.0
-    return torch.max(torch.quantile(dist_ab, q), torch.quantile(dist_ba, q)).item()
+    return float(max(np.quantile(dist_ab.numpy(), q), np.quantile(dist_ba.numpy(), q)))
 
 
 def average_hausdorff_distance(

@@ -185,11 +185,11 @@ class VNet3D(nn.Module):
         auxiliary: list[Tensor] = []
         for i, (dec, skip) in enumerate(zip(self.decoders, reversed(skips))):
             x = dec(x, skip)
-            if use_ds and i < len(self.aux_heads):
+            if self.deep_supervision and self.training and i < len(self.aux_heads):
                 auxiliary.append(self.aux_heads[i](x))
 
         final = self.final(x)
-        if use_ds:
+        if self.deep_supervision and self.training:
             return [final, *reversed(auxiliary)]
         return final
 

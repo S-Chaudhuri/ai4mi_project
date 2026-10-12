@@ -7,30 +7,99 @@
 #SBATCH --output=logs/%x/%j/out.log
 #SBATCH --constraint=scratch-node
 
-# 2D training on the HU-windowed PNG slices (SEGTHOR_2D.tar, same 35/5
-# patient split as the 3D .npy datasets), configs/2d.yaml.
-# The model is the first argument; anything after it goes to train.py.
-# -J sets the job name, which is also the log folder (logs/<name>/<jobid>/).
+# ============================================================================
+# 2D TRAINING  (ENet, ShallowNet) on the HU-windowed PNG slices (SEGTHOR_2D.tar,
+# same 35/5 patient split as the 3D datasets), configs/2d.yaml
 #
-#   sbatch -J ENet       jobs/2d_png.job ENet
-#   sbatch -J ShallowNet jobs/2d_png.job ShallowNet
+# EASIEST: bash jobs/submit_runs.sh run <experiment>   (checks before queueing)
 #
-# Baseline (original patients only, no augmentation):
+# BY HAND:
+#     sbatch [--export=ALL,SETTING=value,...] -J <run_name> jobs/2d_png.job <MODEL> [train.py options]
 #
-#   sbatch -J ENet_base jobs/2d_png.job ENet --dataset.skip_augmented --augmentation.no-enabled
+#   <MODEL>     REQUIRED, always the first word after the job file: ENet | ShallowNet
+#   -J <name>   the run's name and log folder (logs/<name>/<jobid>/out.log)
+#
+#   SETTINGS (--export=ALL,NAME=value,...; all optional, anything else is an ERROR):
+#     SKIP_AUGMENTED  True | False      original patients only              default False
+#     ONLINE_AUG      True | False      online intensity augmentation       default: config (True)
+#     MODE            full | partial    partial = do not supervise heart    default: config (full)
+#     CHECK_ONLY      True | False      check settings, then stop           default False
+#     (True/False also accept true/false and 1/0)
+#
+#   EXTRA train.py OPTIONS (after the model; value = what this job uses by default):
+#     --training.epochs N                  int                          50  (1 epoch = all slices)
+#     --training.batch_size N              int                          8
+#     --training.lr X                      float                        0.0005
+#     --training.weight_decay X            float                        0.005
+#     --training.scheduler S               cosine | none                cosine
+#     --training.loss L                    dice_ce | ce | tversky       dice_ce
+#     --training.dice_weight X             float                        1.0
+#     --model.kernels N                    int                          8
+#     --model.dropout X                    float                        0.4
+#     --runtime.amp_dtype T                bf16 | fp16                  bf16
+#     --runtime.num_workers N              int                          8
+#     All options with types and defaults:  uv run python src/train.py --help
+#     (no skeleton loss, deep supervision or whole-volume eval in 2D: the check rejects them)
+#
+#   EXAMPLE (baseline):
+#     sbatch -J ENet_base --export=ALL,SKIP_AUGMENTED=True,ONLINE_AUG=False jobs/2d_png.job ENet
+#
+#   Always 5 classes (the labels are 0-4), whatever configs/2d.yaml says.
+#   2D runs have no whole-volume evaluation: metrics are per-slice.
+# ============================================================================
+# Nothing below needs editing.
 
-MODEL=${1:-ENet}
-shift
+set -euo pipefail
 
-# The tar unpacks to SEGTHOR/ (dataset.name in configs/2d.yaml)
-tar -xf /scratch-shared/scur0088/tars/SEGTHOR_2D.tar -C "$TMPDIR"
+fail() { echo "ERROR: $*" >&2; exit 2; }
+flag() {  # flag NAME DEFAULT: normalise an on/off setting to true/false, anything else is an error
+  local v="${!1:-$2}"
+  case "${v,,}" in
+    true|1) printf -v "$1" true ;;
+    false|0) printf -v "$1" false ;;
+    *) fail "$1 must be True or False (or 1 / 0), got '$v'" ;;
+  esac
+}
+
+MODEL=${1:-}
+case "$MODEL" in
+  ENet|ShallowNet) shift ;;
+  *) fail "the first word after the job file must be the model (ENet, ShallowNet), got '$MODEL'" ;;
+esac
+
+flag SKIP_AUGMENTED False
+flag CHECK_ONLY False
+ONLINE_AUG=${ONLINE_AUG:-}
+if [[ -n "$ONLINE_AUG" ]]; then flag ONLINE_AUG ""; fi
+
+PROJECT=${PROJECT:-/home/scur0088/project}
+TARS=${TARS:-/scratch-shared/scur0088/tars}
+DATA_DIR=${TMPDIR:-/tmp}
+
+TRAIN_ARGS=(
+  --config configs/2d.yaml
+  --paths.data_path "$DATA_DIR"
+  --dataset.name SEGTHOR
+  --dataset.num_classes 5
+  --model.name "$MODEL"
+)
+if [[ $SKIP_AUGMENTED == true ]]; then TRAIN_ARGS+=(--dataset.skip_augmented); fi
+if [[ $ONLINE_AUG == false ]]; then TRAIN_ARGS+=(--augmentation.no-enabled); fi
+if [[ $ONLINE_AUG == true ]]; then TRAIN_ARGS+=(--augmentation.enabled); fi
+if [[ -n "${MODE:-}" ]]; then
+  case "$MODE" in full|partial) TRAIN_ARGS+=(--training.mode "$MODE") ;; *) fail "MODE must be full or partial, got '$MODE'" ;; esac
+fi
+TRAIN_ARGS+=("$@")
 
 export PATH="$HOME/.local/bin:$PATH"
-cd /home/scur0088/project
+cd "$PROJECT"
+echo ">> job ${SLURM_JOB_ID:-local} on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
+
+uv run python jobs/check_config.py "${TRAIN_ARGS[@]}" || fail "config check failed (see above), nothing was run"
+if [[ $CHECK_ONLY == true ]]; then exit 0; fi
+
+[[ -f "$TARS/SEGTHOR_2D.tar" ]] || fail "missing $TARS/SEGTHOR_2D.tar"
+tar -xf "$TARS/SEGTHOR_2D.tar" -C "$DATA_DIR"
 
 # Run python with -O to turn off asserts
-uv run python -O src/train.py \
-  --config configs/2d.yaml \
-  --paths.data_path "$TMPDIR" \
-  --model.name "$MODEL" \
-  "$@"
+uv run python -O src/train.py "${TRAIN_ARGS[@]}"

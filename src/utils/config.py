@@ -107,9 +107,7 @@ class ModelConfig:
     # Temperature applied to the logits before softmax (1 = no scaling).
     temperature: float = 1.0
 
-    # Use deep supervision: the model returns a list of outputs at different
-    # resolutions, and the loss is computed on all of them. This is only
-    # supported by UNet3D and VNet3D, and is off by default.
+    # Deep supervision for the 3D models
     deep_supervision: bool = False
 
 
@@ -162,6 +160,14 @@ class TrainingConfig:
 
     # Weight of the Tversky term when loss is "tversky_ce".
     tversky_weight: float = 1.0
+
+    # Skeleton Recall loss (3D, box datasets only), added on top of the main
+    # loss during training: weight * (1 - fraction of the GT centreline of
+    # skeleton_classes that the prediction covers). 0 = off.
+    skeleton_weight: float = 0.0
+
+    # Thin tubular organs to supervise: 1 = esophagus, 3 = trachea
+    skeleton_classes: tuple[int, ...] = (1, 3)
 
 
 @dataclass
