@@ -7,67 +7,129 @@
 #SBATCH --output=logs/%x/%j/out.log
 #SBATCH --constraint=scratch-node
 
-# 3D training + evaluation on the .npy datasets (configs/3d.yaml).
+# ============================================================================
+# 3D TRAINING + EVALUATION  (UNet3D, VNet3D, ResUNet3D, MedNeXt3D)
 #
-#   sbatch -J <name> jobs/3d_npy.job <UNet3D|VNet3D|ResUNet3D|MedNeXt3D> [extra train.py options]
+# EASIEST: don't submit this file yourself, use the submit script, which
+# checks everything before anything is queued:
+#     bash jobs/submit_runs.sh list
+#     bash jobs/submit_runs.sh run <experiment>
 #
-# Settings (environment, pass with --export=ALL,NAME=value,...):
-#   CHANNELS=1|3          input channels / dataset (default 1)
-#   LOSS=dice_ce|ce|tversky                    (default dice_ce)
-#   SKIP_AUGMENTED=True   original patients only, no offline-augmented copies
-#   DEEP_SUPERVISION=True
-#   SKELETON_WEIGHT=<w>   Skeleton Recall loss on top of LOSS (default 0 = off)
+# BY HAND:
+#     sbatch [--export=ALL,SETTING=value,...] -J <run_name> jobs/3d_npy.job <MODEL> [train.py options]
 #
-# Easier: bash jobs/submit_runs.sh (submits the experiments with the right settings)
-# MedNeXt3D: add --training.batch_size 4 (batch 8 does not fit a 40 GB A100).
+#   <MODEL>     REQUIRED, always the first word after the job file:
+#               UNet3D | VNet3D | ResUNet3D | MedNeXt3D
+#   -J <name>   the run's name and log folder (logs/<name>/<jobid>/out.log)
+#
+#   SETTINGS (--export=ALL,NAME=value,...; all optional, anything else is an ERROR):
+#     CHANNELS          1 | 3                    input channels / dataset          default 1
+#     LOSS              dice_ce | ce | tversky   main loss                         default dice_ce
+#     SKELETON_WEIGHT   number >= 0              skeleton loss on top of LOSS      default 0 (off)
+#     SKIP_AUGMENTED    True | False             original patients only            default False
+#     DEEP_SUPERVISION  True | False             loss on every decoder level       default False
+#     CHECK_ONLY        True | False             check settings, then stop         default False
+#     (True/False also accept true/false and 1/0)
+#
+#   EXTRA train.py OPTIONS (after the model; value = what this job uses by default):
+#     --training.epochs N                  int                          50
+#     --training.batch_size N              int                          8   (MedNeXt3D: 4)
+#     --training.batches_per_epoch N       int                          100
+#     --training.lr X                      float                        0.0005
+#     --training.weight_decay X            float                        0.005
+#     --training.scheduler S               cosine | none                cosine
+#     --training.mode M                    full | partial               full  (partial: no heart)
+#     --training.dice_weight X             float                        1.0
+#     --training.skeleton_classes K [K..]  class ids (1 eso, 3 trachea) 1 3
+#     --model.kernels N                    int                          16
+#     --model.dropout X                    float                        0.01
+#     --dataset.box_size D H W             3 ints                       132 132 128
+#     --dataset.fg_prob X                  0..1                         0.7
+#     --augmentation.enabled / --augmentation.no-enabled  (online aug)  off
+#     --runtime.amp_dtype T                bf16 | fp16                  bf16
+#     --runtime.num_workers N              int                          8
+#     --eval.enabled / --eval.no-enabled   (evaluate after training)    on
+#     --eval.postprocess P [P..]           lcc | lcc26 (none = raw)     lcc
+#     --eval.overlap X                     0..1                         0.5
+#     --eval.submission / --eval.no-submission  (write NIfTIs)          on
+#     All options with types and defaults:  uv run python src/train.py --help
+#
+#   EXAMPLES:
+#     sbatch -J ResUNet3D_base --export=ALL,SKIP_AUGMENTED=True jobs/3d_npy.job ResUNet3D
+#     sbatch -J ResUNet3D_skel --export=ALL,SKIP_AUGMENTED=True,SKELETON_WEIGHT=1 jobs/3d_npy.job ResUNet3D
+#     sbatch -J MedNeXt3D_3ch  --export=ALL,CHANNELS=3 jobs/3d_npy.job MedNeXt3D --training.batch_size 4
+#     sbatch -J test --time=00:30:00 jobs/3d_npy.job UNet3D --training.epochs 1
+#
+#   COMMON MISTAKES (all stopped with a clear ERROR before any data or GPU time):
+#     - no model after the job file              -> silently trained UNet3D before
+#     - --dataset.skip_augmented True            -> on/off options take NO value
+#     - --augmentation.skip_augmented            -> wrong group, it is --dataset.skip_augmented
+#     - CHANNELS=3 with a 1-channel dataset, misspelled options, unknown LOSS
+#     - MedNeXt3D needs --training.batch_size 4 on a 40 GB A100 (warned)
+# ============================================================================
+# Nothing below needs editing.
 
 set -euo pipefail
 
-is_true() { [[ "${1,,}" == "true" || "$1" == "1" ]]; }
+fail() { echo "ERROR: $*" >&2; exit 2; }
+flag() {  # flag NAME DEFAULT: normalise an on/off setting to true/false, anything else is an error
+  local v="${!1:-$2}"
+  case "${v,,}" in
+    true|1) printf -v "$1" true ;;
+    false|0) printf -v "$1" false ;;
+    *) fail "$1 must be True or False (or 1 / 0), got '$v'" ;;
+  esac
+}
 
 MODEL=${1:-}
 case "$MODEL" in
   UNet3D|VNet3D|ResUNet3D|MedNeXt3D) shift ;;
-  *) echo "ERROR: first argument must be the model (UNet3D, VNet3D, ResUNet3D, MedNeXt3D), got '$MODEL'" >&2; exit 2 ;;
+  *) fail "the first word after the job file must be the model (UNet3D, VNet3D, ResUNet3D, MedNeXt3D), got '$MODEL'" ;;
 esac
 
 CHANNELS=${CHANNELS:-1}
-case "$CHANNELS" in 1|3) ;; *) echo "ERROR: CHANNELS must be 1 or 3, got '$CHANNELS'" >&2; exit 2 ;; esac
+case "$CHANNELS" in 1|3) ;; *) fail "CHANNELS must be 1 or 3, got '$CHANNELS'" ;; esac
 LOSS=${LOSS:-dice_ce}
-case "$LOSS" in ce|dice_ce|tversky) ;; *) echo "ERROR: LOSS must be ce, dice_ce or tversky, got '$LOSS'" >&2; exit 2 ;; esac
+case "$LOSS" in ce|dice_ce|tversky) ;; *) fail "LOSS must be ce, dice_ce or tversky, got '$LOSS'" ;; esac
 SKELETON_WEIGHT=${SKELETON_WEIGHT:-0}
-[[ "$SKELETON_WEIGHT" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "ERROR: SKELETON_WEIGHT must be a number, got '$SKELETON_WEIGHT'" >&2; exit 2; }
+[[ "$SKELETON_WEIGHT" =~ ^[0-9]*\.?[0-9]+$ ]] || fail "SKELETON_WEIGHT must be a number >= 0, got '$SKELETON_WEIGHT'"
+flag SKIP_AUGMENTED False
+flag DEEP_SUPERVISION False
+flag CHECK_ONLY False
 
 DATASET=SEGTHOR_3D_${CHANNELS}ch
 PROJECT=${PROJECT:-/home/scur0088/project}
 TARS=${TARS:-/scratch-shared/scur0088/tars}
+DATA_DIR=${TMPDIR:-/tmp}
 
-for t in "$TARS/$DATASET.tar" "$TARS/segthor_train_full.tar"; do
-  [[ -f "$t" ]] || { echo "ERROR: missing $t" >&2; exit 2; }
-done
-tar -xf "$TARS/$DATASET.tar" -C "$TMPDIR"
-tar -xf "$TARS/segthor_train_full.tar" -C "$TMPDIR"
-
-ARGS=(--training.skeleton_weight "$SKELETON_WEIGHT")
-if is_true "${DEEP_SUPERVISION:-False}"; then ARGS+=(--model.deep_supervision); fi
-if is_true "${SKIP_AUGMENTED:-False}"; then ARGS+=(--dataset.skip_augmented); fi
-
-echo ">> model=$MODEL channels=$CHANNELS loss=$LOSS skeleton_weight=$SKELETON_WEIGHT" \
-     "deep_supervision=${DEEP_SUPERVISION:-False} skip_augmented=${SKIP_AUGMENTED:-False} extra: $*"
+TRAIN_ARGS=(
+  --config configs/3d.yaml
+  --paths.data_path "$DATA_DIR"
+  --dataset.name "$DATASET"
+  --model.in_channels "$CHANNELS"
+  --model.name "$MODEL"
+  --model.is_3d
+  --dataset.box_size 132 132 128
+  --dataset.fg_prob 0.7
+  --training.loss "$LOSS"
+  --training.skeleton_weight "$SKELETON_WEIGHT"
+)
+if [[ $DEEP_SUPERVISION == true ]]; then TRAIN_ARGS+=(--model.deep_supervision); fi
+if [[ $SKIP_AUGMENTED == true ]]; then TRAIN_ARGS+=(--dataset.skip_augmented); fi
+TRAIN_ARGS+=("$@")
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$PROJECT"
+echo ">> job ${SLURM_JOB_ID:-local} on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
+
+uv run python jobs/check_config.py "${TRAIN_ARGS[@]}" || fail "config check failed (see above), nothing was run"
+if [[ $CHECK_ONLY == true ]]; then exit 0; fi
+
+for t in "$TARS/$DATASET.tar" "$TARS/segthor_train_full.tar"; do
+  [[ -f "$t" ]] || fail "missing $t"
+done
+tar -xf "$TARS/$DATASET.tar" -C "$DATA_DIR"
+tar -xf "$TARS/segthor_train_full.tar" -C "$DATA_DIR"
 
 # Run python with -O to turn off asserts
-uv run python -O src/train.py \
-  --config configs/3d.yaml \
-  --paths.data_path "$TMPDIR" \
-  --dataset.name "$DATASET" \
-  --model.in_channels "$CHANNELS" \
-  --model.name "$MODEL" \
-  --model.is_3d \
-  --dataset.box_size 132 132 128 \
-  --dataset.fg_prob 0.7 \
-  --training.loss "$LOSS" \
-  "${ARGS[@]}" \
-  "$@"
+uv run python -O src/train.py "${TRAIN_ARGS[@]}"
