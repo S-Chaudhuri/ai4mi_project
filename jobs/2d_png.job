@@ -7,30 +7,52 @@
 #SBATCH --output=logs/%x/%j/out.log
 #SBATCH --constraint=scratch-node
 
-# 2D training on the HU-windowed PNG slices (SEGTHOR_2D.tar, same 35/5
-# patient split as the 3D .npy datasets), configs/2d.yaml.
-# The model is the first argument; anything after it goes to train.py.
-# -J sets the job name, which is also the log folder (logs/<name>/<jobid>/).
+# 2D training on the HU-windowed PNG slices (SEGTHOR_2D.tar, same 35/5 split
+# as the 3D datasets), configs/2d.yaml.
 #
-#   sbatch -J ENet       jobs/2d_png.job ENet
-#   sbatch -J ShallowNet jobs/2d_png.job ShallowNet
+#   sbatch -J <name> jobs/2d_png.job <ENet|ShallowNet> [extra train.py options]
 #
-# Baseline (original patients only, no augmentation):
+# Settings (environment, pass with --export=ALL,NAME=value,...):
+#   SKIP_AUGMENTED=True   original patients only, no offline-augmented copies
+#   ONLINE_AUG=False      no online intensity augmentation
+#   MODE=full|partial     partial = do not supervise the heart (default: config)
 #
-#   sbatch -J ENet_base jobs/2d_png.job ENet --dataset.skip_augmented --augmentation.no-enabled
+# Easier: bash jobs/submit_runs.sh
 
-MODEL=${1:-ENet}
-shift
+set -euo pipefail
 
-# The tar unpacks to SEGTHOR/ (dataset.name in configs/2d.yaml)
-tar -xf /scratch-shared/scur0088/tars/SEGTHOR_2D.tar -C "$TMPDIR"
+is_true() { [[ "${1,,}" == "true" || "$1" == "1" ]]; }
+is_false() { [[ "${1,,}" == "false" || "$1" == "0" ]]; }
+
+MODEL=${1:-}
+case "$MODEL" in
+  ENet|ShallowNet) shift ;;
+  *) echo "ERROR: first argument must be the model (ENet, ShallowNet), got '$MODEL'" >&2; exit 2 ;;
+esac
+
+PROJECT=${PROJECT:-/home/scur0088/project}
+TARS=${TARS:-/scratch-shared/scur0088/tars}
+[[ -f "$TARS/SEGTHOR_2D.tar" ]] || { echo "ERROR: missing $TARS/SEGTHOR_2D.tar" >&2; exit 2; }
+tar -xf "$TARS/SEGTHOR_2D.tar" -C "$TMPDIR"
+
+ARGS=()
+if is_true "${SKIP_AUGMENTED:-False}"; then ARGS+=(--dataset.skip_augmented); fi
+if is_false "${ONLINE_AUG:-True}"; then ARGS+=(--augmentation.no-enabled); fi
+if [[ -n "${MODE:-}" ]]; then
+  case "$MODE" in full|partial) ARGS+=(--training.mode "$MODE") ;; *) echo "ERROR: MODE must be full or partial, got '$MODE'" >&2; exit 2 ;; esac
+fi
+
+echo ">> model=$MODEL skip_augmented=${SKIP_AUGMENTED:-False} online_aug=${ONLINE_AUG:-config} mode=${MODE:-config} extra: $*"
 
 export PATH="$HOME/.local/bin:$PATH"
-cd /home/scur0088/project
+cd "$PROJECT"
 
-# Run python with -O to turn off asserts
+# The tar unpacks to SEGTHOR/; num_classes is pinned to 5 (the labels are 0-4)
 uv run python -O src/train.py \
   --config configs/2d.yaml \
   --paths.data_path "$TMPDIR" \
+  --dataset.name SEGTHOR \
+  --dataset.num_classes 5 \
   --model.name "$MODEL" \
+  "${ARGS[@]+"${ARGS[@]}"}" \
   "$@"

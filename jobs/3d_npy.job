@@ -7,45 +7,56 @@
 #SBATCH --output=logs/%x/%j/out.log
 #SBATCH --constraint=scratch-node
 
-# 3D training + evaluation on the preprocessed .npy dataset (configs/3d.yaml).
-# The model is the first argument; anything after it goes to train.py.
-# -J sets the job name, which is also the log folder (logs/<name>/<jobid>/).
+# 3D training + evaluation on the .npy datasets (configs/3d.yaml).
 #
-#   sbatch -J ResUNet3D jobs/3d_npy.job ResUNet3D
-#   sbatch -J UNet3D    jobs/3d_npy.job UNet3D
-#   sbatch -J VNet3D    jobs/3d_npy.job VNet3D
-#   sbatch -J MedNeXt3D jobs/3d_npy.job MedNeXt3D --training.batch_size 4
-#   sbatch -J test      jobs/3d_npy.job UNet3D --training.epochs 1    # quick check
+#   sbatch -J <name> jobs/3d_npy.job <UNet3D|VNet3D|ResUNet3D|MedNeXt3D> [extra train.py options]
 #
-# 3-channel input (soft-tissue, lung and blood HU windows): set CHANNELS=3,
-# which picks SEGTHOR_3D_3ch.tar and --model.in_channels 3 together
+# Settings (environment, pass with --export=ALL,NAME=value,...):
+#   CHANNELS=1|3          input channels / dataset (default 1)
+#   LOSS=dice_ce|ce|tversky                    (default dice_ce)
+#   SKIP_AUGMENTED=True   original patients only, no offline-augmented copies
+#   DEEP_SUPERVISION=True
+#   SKELETON_WEIGHT=<w>   Skeleton Recall loss on top of LOSS (default 0 = off)
 #
-#   sbatch --export=ALL,CHANNELS=3 -J ResUNet3D_3ch jobs/3d_npy.job ResUNet3D
-#
-# MedNeXt3D needs ~5 GB per sample at 132x132x128, so batch 8 does not fit a
-# 40 GB A100: use batch 4, or --partition=gpu_h100 on the sbatch line.
+# Easier: bash jobs/submit_runs.sh (submits the experiments with the right settings)
+# MedNeXt3D: add --training.batch_size 4 (batch 8 does not fit a 40 GB A100).
 
-MODEL=${1:-UNet3D}
-shift
+set -euo pipefail
+
+is_true() { [[ "${1,,}" == "true" || "$1" == "1" ]]; }
+
+MODEL=${1:-}
+case "$MODEL" in
+  UNet3D|VNet3D|ResUNet3D|MedNeXt3D) shift ;;
+  *) echo "ERROR: first argument must be the model (UNet3D, VNet3D, ResUNet3D, MedNeXt3D), got '$MODEL'" >&2; exit 2 ;;
+esac
+
 CHANNELS=${CHANNELS:-1}
-DATASET=SEGTHOR_3D_${CHANNELS}ch
+case "$CHANNELS" in 1|3) ;; *) echo "ERROR: CHANNELS must be 1 or 3, got '$CHANNELS'" >&2; exit 2 ;; esac
 LOSS=${LOSS:-dice_ce}
-DEEP_SUPERVISION=${DEEP_SUPERVISION:-False}
+case "$LOSS" in ce|dice_ce|tversky) ;; *) echo "ERROR: LOSS must be ce, dice_ce or tversky, got '$LOSS'" >&2; exit 2 ;; esac
+SKELETON_WEIGHT=${SKELETON_WEIGHT:-0}
+[[ "$SKELETON_WEIGHT" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "ERROR: SKELETON_WEIGHT must be a number, got '$SKELETON_WEIGHT'" >&2; exit 2; }
 
-# Stream both datasets to the node's NVMe: the .npy volumes for training, the
-# raw NIfTIs for evaluation (scored against the original GT.nii.gz)
-TARS=/scratch-shared/scur0088/tars
+DATASET=SEGTHOR_3D_${CHANNELS}ch
+PROJECT=${PROJECT:-/home/scur0088/project}
+TARS=${TARS:-/scratch-shared/scur0088/tars}
+
+for t in "$TARS/$DATASET.tar" "$TARS/segthor_train_full.tar"; do
+  [[ -f "$t" ]] || { echo "ERROR: missing $t" >&2; exit 2; }
+done
 tar -xf "$TARS/$DATASET.tar" -C "$TMPDIR"
 tar -xf "$TARS/segthor_train_full.tar" -C "$TMPDIR"
 
+ARGS=(--training.skeleton_weight "$SKELETON_WEIGHT")
+if is_true "${DEEP_SUPERVISION:-False}"; then ARGS+=(--model.deep_supervision); fi
+if is_true "${SKIP_AUGMENTED:-False}"; then ARGS+=(--dataset.skip_augmented); fi
+
+echo ">> model=$MODEL channels=$CHANNELS loss=$LOSS skeleton_weight=$SKELETON_WEIGHT" \
+     "deep_supervision=${DEEP_SUPERVISION:-False} skip_augmented=${SKIP_AUGMENTED:-False} extra: $*"
+
 export PATH="$HOME/.local/bin:$PATH"
-cd /home/scur0088/project
-
-DS_ARGS=()
-
-if [[ "$DEEP_SUPERVISION" == "True" ]]; then
-    DS_ARGS+=(--model.deep_supervision)
-fi
+cd "$PROJECT"
 
 # Run python with -O to turn off asserts
 uv run python -O src/train.py \
@@ -58,5 +69,5 @@ uv run python -O src/train.py \
   --dataset.box_size 132 132 128 \
   --dataset.fg_prob 0.7 \
   --training.loss "$LOSS" \
-  "${DS_ARGS[@]}" \
+  "${ARGS[@]}" \
   "$@"
