@@ -9,9 +9,11 @@ from src.utils.config import Config, get_config
 from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.evaluation import (
     evaluate_patient,
+    load_native_ct,
     load_native_gt,
     to_native_space,
     write_csv,
+    write_metrics_npz,
     write_submission,
 )
 
@@ -87,7 +89,9 @@ def run_eval(config: Config):
     )
     K = config.dataset.num_classes
     net = get_model(config)
-    net.load_state_dict(torch.load(config.eval.weights, map_location=device))
+    net.load_state_dict(
+        torch.load(config.eval.weights, map_location=device, weights_only=True)
+    )
     net.to(device).eval()
 
     if config.paths.results_dir is None:
@@ -95,10 +99,27 @@ def run_eval(config: Config):
     eval_results_dir = config.paths.results_dir / "eval"
     data_root_dir = config.paths.data_path / config.dataset.name
 
-    ds = BoxDataset(
-        config.eval.split, data_root_dir, sub_box_size=None, num_classes=K
-    )  # whole volumes, no transforms
-    check_in_channels(ds, config)
+    if config.eval.split == "test":
+        # The test set has no labels: whole CT volumes, no gt.npy, no metrics.
+        test_dir = data_root_dir / "test"
+        items = [
+            {"stem": p.parent.name, "img_vol": np.load(p)}
+            for p in sorted(test_dir.glob("Patient_*/img.npy"))
+        ]
+        if not items:
+            raise SystemExit(
+                f"No test volumes in {test_dir}: run src/preprocessing/preprocess_3d.py "
+                "with --test_source_dir first"
+            )
+        for item in items:
+            if item["img_vol"].ndim == 3:
+                item["img_vol"] = item["img_vol"][None]
+    else:
+        ds = BoxDataset(
+            config.eval.split, data_root_dir, sub_box_size=None, num_classes=K
+        )  # whole volumes, no transforms
+        check_in_channels(ds, config)
+        items = ds.items
 
     # Raw NIfTIs of both the train and val splits live under segthor_part1/train
     # (slice_segthor.py only reads from train/ and test/), so map the split.
@@ -107,13 +128,12 @@ def run_eval(config: Config):
     raw_split = "test" if config.eval.split == "test" else "train"
 
     results = {}
-    for item in ds.items:
+    n_test = 0
+    for item in items:
         patient_id = config.eval.patient_id
         if patient_id is not None and item["stem"] != f"Patient_{patient_id:02d}":
             continue
-        meta_path = (
-            data_root_dir / config.eval.split / item["stem"] / "meta.json"
-        )  # NEW
+        meta_path = data_root_dir / config.eval.split / item["stem"] / "meta.json"
         meta = json.loads(meta_path.read_text())
         img = img_transform_3d(item["img_vol"])
         probs = predict_volume(
@@ -127,41 +147,38 @@ def run_eval(config: Config):
             config.dataset.use_coords and not config.dataset.coarse,
             config.model.temperature,
         )
-        pred = (
-            probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)
-        )  # (z, y, x)   <- updated comment
+        pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)  # (z, y, x)
         # Before the metrics and the submission, so both use the same prediction
         pred = postprocess(pred, config.eval.postprocess)
+        pred_xyz = to_native_space(pred, meta)
 
-        # for item in ds.items:
-        #     patient_id = config.eval.patient_id
-        #     if patient_id is not None and item["stem"] != f"Patient_{patient_id:02d}":
-        #         continue
-        #     img = img_transform_3d(item["img_vol"])
-        #     probs = predict_volume(
-        #         net,
-        #         img,
-        #         config.dataset.box_size,
-        #         config.eval.overlap,
-        #         K,
-        #         config.training.batch_size,
-        #         device,
-        #         config.model.temperature,
-        #     )
-        #     pred = probs.max(dim=0).indices.cpu().numpy().astype(np.uint8)  # (D, H, W)
+        if config.eval.split == "test":
+            # No labels to score against: check the geometry against the CT
+            # itself and write the prediction.
+            ct_shape, affine = load_native_ct(
+                config.paths.data_path / "test", item["stem"]
+            )
+            if pred_xyz.shape != ct_shape:
+                raise ValueError(
+                    f"{item['stem']}: prediction {pred_xyz.shape} != CT {ct_shape}"
+                )
+            write_submission(
+                pred_xyz,
+                affine,
+                item["stem"],
+                eval_results_dir / "submission" / "test",
+            )
+            n_test += 1
+            print(f"{item['stem']}: wrote test prediction")
+            continue
 
-        # gt_xyz, spacing, affine = load_native_gt(
-        #     config.paths.data_path, item["stem"], split_dir=raw_split
-        # )
-        # pred_xyz = to_native_space(pred, gt_xyz.shape)  # back to native grid
         gt_xyz, spacing, affine = load_native_gt(
             config.paths.data_path,
             item["stem"],
             split_dir=raw_split,
             dataset_name=config.paths.raw_dataset,
         )
-        pred_xyz = to_native_space(pred, meta)  # was: (pred, gt_xyz.shape)
-        # NEW. Not an assert: jobs run with python -O, which strips asserts
+        # Not an assert: jobs run with python -O, which strips asserts
         if pred_xyz.shape != gt_xyz.shape:
             raise ValueError(
                 f"{item['stem']}: prediction {pred_xyz.shape} != GT {gt_xyz.shape}"
@@ -178,7 +195,6 @@ def run_eval(config: Config):
                     "roundtrip dice", k, 2 * (g & p).sum() / (g.sum() + p.sum() + 1e-9)
                 )
         results[item["stem"]] = evaluate_patient(pred_xyz, gt_xyz, spacing)
-        # results[item["stem"]] = evaluate_patient(pred_xyz, gt_xyz, spacing)
         print(item["stem"], results[item["stem"]])
 
         if config.eval.submission:
@@ -190,6 +206,19 @@ def run_eval(config: Config):
                 gt_xyz=gt_xyz,
             )
 
+    if config.eval.split == "test":
+        if n_test == 0:
+            print(
+                ">> Warning: no test predictions written; "
+                "check --evaluation.patient-id and the test dataset"
+            )
+        else:
+            print(
+                f">> Wrote {n_test} test predictions to "
+                f"{eval_results_dir / 'submission' / 'test' / 'pred'}"
+            )
+        return
+
     if not results:
         print(
             ">> Warning: no patients evaluated; "
@@ -197,6 +226,7 @@ def run_eval(config: Config):
         )
 
     write_csv(results, eval_results_dir / "metrics.csv")
+    write_metrics_npz(results, eval_results_dir, K)
     print(f">> Wrote metrics to {eval_results_dir / 'metrics.csv'}")
 
 

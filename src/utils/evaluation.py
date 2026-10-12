@@ -142,15 +142,52 @@ def write_csv(results: dict, path: Path):
 def write_submission(
     pred_xyz: np.ndarray, affine, patient: str, out_dir: Path, gt_xyz=None
 ):
-    """One NIfTI per patient, uint8 labels 0-4, native grid and affine of the CT."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "pred").mkdir(parents=True, exist_ok=True)
     nib.save(
         nib.Nifti1Image(pred_xyz.astype(np.uint8), affine),
         str(out_dir / "pred" / f"{patient}.nii.gz"),
     )
 
     if gt_xyz is not None:
+        (out_dir / "gt").mkdir(parents=True, exist_ok=True)
         nib.save(
             nib.Nifti1Image(gt_xyz.astype(np.uint8), affine),
-            str(out_dir / "pred" / f"{patient}.nii.gz"),
+            str(out_dir / "gt" / f"{patient}.nii.gz"),
         )
+
+
+def load_native_ct(ct_root, patient):
+    """Shape and affine of a patient's raw CT, e.g. from the unzipped test set:
+    <ct_root>/<patient>/*.nii.gz."""
+    pdir = Path(ct_root) / patient
+    if not pdir.is_dir():
+        raise FileNotFoundError(f"No {pdir}")
+
+    ct_path = pdir / f"{patient}.nii.gz"
+    if not ct_path.is_file():
+        cands = sorted(p for p in pdir.glob("*.nii.gz") if p.name != "GT.nii.gz")
+        if len(cands) != 1:
+            raise FileNotFoundError(
+                f"No {patient}.nii.gz (or single CT) in {pdir}: "
+                f"{[p.name for p in pdir.glob('*.nii.gz')]}"
+            )
+        ct_path = cands[0]
+
+    nii = nib.load(str(ct_path))
+    return np.asarray(nii.dataobj).shape, nii.affine
+
+
+def write_metrics_npz(
+    results: dict, out_dir: Path, K: int, classes: dict = CLASS_NAMES
+):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for metric in ("dice", "hd95", "nsd"):
+        arrays = {}
+        for stem, organs in results.items():
+            arr = np.full(K, np.nan, dtype=np.float32)
+            for k, name in classes.items():
+                if name in organs:
+                    arr[k] = organs[name][metric]
+            arrays[stem] = arr
+        np.savez(out_dir / f"3d_{metric}.npz", **arrays)
+        print(f">> Wrote {out_dir / f'3d_{metric}.npz'}")

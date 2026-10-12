@@ -45,7 +45,7 @@ model:
   in_channels: 1
   is_3d: true
   kernels: 16
-  name: ResUNet3D
+  name: VNet3D
   temperature: 1.0
 paths:
   data_path: /scratch-node/scur0088.27859636

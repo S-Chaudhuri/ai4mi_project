@@ -33,31 +33,15 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The Makefile and Slurm jobs call `python` directly, so go through the
-environment (`uv run make ...`, `uv run python ...`) or activate `.venv` first.
+The Makefile calls `python` directly, so go through the
+environment (`uv run make ...`) or activate `.venv` first.
 
 ## Data
 
 Datasets live in `data/<dataset.name>`, the name is set in the config.
 
-Toy dataset (two-circles PNGs, for checking the pipeline):
-
-```bash
-uv run make data/TOY2
-```
-
-SegTHOR as PNG slices for the 2D pipeline. Download `segthor_part1.zip` from
-the course SharePoint (UvA account needed) into `data/`, then:
-
-```bash
-uv run make data/segthor_part1   # checksum + unzip
-uv run make data/SEGTHOR         # slice to 256x256 PNGs
-```
-
 The 3D pipeline reads one `.npy` volume per patient instead of PNGs. The prep
-script `src/preprocessing/preprocess_3d.py` currently lives on the
-`origin/local-run` branch (not merged into this one yet); merge or check that
-out first, then run:
+script `src/preprocessing/preprocess_3d.py` builds them from the NIfTIs:
 
 ```bash
 uv run python src/preprocessing/preprocess_3d.py --source_dir data/segthor_full \
@@ -65,6 +49,10 @@ uv run python src/preprocessing/preprocess_3d.py --source_dir data/segthor_full 
 uv run python src/preprocessing/preprocess_3d.py --source_dir data/segthor_full \
     --dest_dir data/SEGTHOR_3D_3ch --windows soft lung blood --variants 2
 ```
+
+The same script adds the label-free test patients (unzipped `test.zip`) to an
+already-built dataset: `--dest_dir data/SEGTHOR_3D_1ch --test_source_dir data/test`
+(see [Submission](#submission)).
 
 `1ch` is a single soft-tissue HU window, `3ch` adds lung and blood windows;
 `--model.in_channels` must match the dataset, training checks this. The
@@ -132,6 +120,64 @@ its own `bestweights.pt` after the last epoch. Other options:
 
 `src/eval.py` is the older 2D single-patient inference script.
 
+## Submission
+
+The course submission is a `group-12/` folder plus a tarball (the required
+layout is in `docs/original/readme.md`). `scripts/make_submission.py`
+assembles it from a results run directory, once that run has produced the
+eval outputs. On a machine with the data:
+
+1. Checksum and extract the test set (Patients 41+, course SharePoint), then
+   add the label-less test volumes to the 3D dataset:
+
+   ```bash
+   sha256sum -c data/test.zip.sha256
+   unzip -q data/test.zip -d data/test
+   uv run python src/preprocessing/preprocess_3d.py --dest_dir data/SEGTHOR_3D_1ch \
+       --test_source_dir data/test
+   ```
+
+   Spacing and windows must match how the dataset was built.
+
+2. Evaluate the best model on the val split (metrics + submission files) and
+   the test split (predictions only):
+
+   ```bash
+   RUN=results/SEGTHOR_3D_1ch/<run>
+   uv run python src/eval_3D.py --config $RUN/config.yaml \
+       --paths.data_path data --paths.raw_dataset segthor_full \
+       --eval.weights $RUN/bestweights.pt --eval.submission \
+       --runtime.amp_dtype bf16
+   uv run python src/eval_3D.py --config $RUN/config.yaml \
+       --paths.data_path data --paths.raw_dataset segthor_full \
+       --eval.weights $RUN/bestweights.pt --eval.split test \
+       --runtime.amp_dtype bf16
+   ```
+
+   `--eval.split val` is the default. This writes `eval/metrics.csv`, the
+   `3d_{dice,hd95,nsd}.npz` metric files (one float32 array per patient, five
+   classes, background NaN) and `eval/submission/{val,test}/pred/` (plus
+   `val/gt/`). The `--runtime.amp_dtype` override is only needed when the run's
+   config has the old `none` value.
+
+3. Assemble the folder and tarball:
+
+   ```bash
+   uv run python scripts/make_submission.py --run $RUN
+   ```
+
+   This rebuilds the model as a full torch module
+   (`bestmodel-group-12.pkl`, the course's `torch.save(net, ...)` form),
+   copies the val predictions/labels and metric npz files and the test
+   predictions, bundles the `submission` branch into `group-12.bundle`, and
+   writes `submission/group-12.tar.zst`. Run it with a clean working tree,
+   the bundle only contains committed code.
+
+Note: our HD95 is the 95th percentile of the directed surface-to-surface
+distance (the worse of the two directions) and our NSD uses a 2 mm tau, which
+differs slightly from the course reference definitions. The npz files hold
+the values we report.
+
 ## Tests and lint
 
 The tests are assert-based scripts, no pytest required. These pass on this
@@ -140,10 +186,11 @@ branch:
 ```bash
 uv run python tests/test_metrics.py
 uv run python tests/test_postprocess.py
+uv run python tests/test_VNet3d.py
 ```
 
-`tests/test_sweep.py`, `tests/test_VNet3d.py` and `tests/test_3d_dataset_emma.py`
-(needs `data/SEGTHOR`) are stale after the recent refactors and currently fail.
+`tests/test_sweep.py` and `tests/test_3d_dataset_emma.py` (needs
+`data/SEGTHOR`) are stale after the recent refactors and currently fail.
 
 ```bash
 uv run ruff check
