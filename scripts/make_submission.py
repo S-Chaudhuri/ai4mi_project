@@ -124,8 +124,12 @@ def main() -> None:
     if not npz:
         sys.exit(f"no 3d_*.npz metric files in {eval_dir}")
     for p in npz:
-        if sorted(np.load(p).keys()) != val_stems:
-            sys.exit(f"{p.name} keys do not match the val patients")
+        keys = sorted(np.load(p).keys())
+        if keys != val_stems:
+            sys.exit(
+                f"{p.name} keys {keys} do not match the val predictions {val_stems}\n"
+                "  -> stale files from an earlier run? Remove the run's eval/ folder and rerun the val eval"
+            )
 
     for f in (group_dir / "val" / "pred").glob("*.nii.gz"):
         shape_p = np.asarray(nib.load(str(f)).dataobj).shape
