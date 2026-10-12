@@ -55,7 +55,7 @@ def predict_volume(net, img, box, overlap, K, batch_size, device, use_coords=Fal
                 x = torch.cat([x, torch.from_numpy(coord_grid((D, H, W), (a, b, c), box))])
             xs.append(x)
         out = net(torch.stack(xs).to(device))
-        if isinstance(out, (list, tuple)):  # deep supervision: full resolution only
+        if isinstance(out, (list, tuple)):
             out = out[0]
         probs = F.softmax(temperature * out.float(), dim=1)
         for p, (a, b, c) in zip(probs, chunk):

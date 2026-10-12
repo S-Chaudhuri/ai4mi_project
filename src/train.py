@@ -361,9 +361,6 @@ def setup(
 
 def get_loss_func(config: Config):
     loss = _main_loss(config)
-    # Deep supervision: the model returns [full res, 1/2, 1/4, ...] in training;
-    # the wrapper applies the loss to every level (falls back to the plain loss
-    # for a single output, e.g. in validation)
     if config.model.is_3d and config.model.deep_supervision:
         return DeepSupervisionLoss(loss=loss)
     return loss
@@ -613,9 +610,6 @@ def runTraining(config: Config):
 
                     with torch.autocast(device_type=device_type, dtype=amp_dtype):
                         pred_logits = net(img)
-                        # Deep supervision returns [full res, 1/2, 1/4, ...]:
-                        # the loss uses every level, the metrics (and the
-                        # skeleton loss) only the full-resolution output
                         outputs = (
                             pred_logits
                             if isinstance(pred_logits, (list, tuple))

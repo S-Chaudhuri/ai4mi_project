@@ -108,7 +108,7 @@ class UNet3D(nn.Module):
                 auxiliary.append(self.aux_heads[i](x))
 
         final = self.final(x)
-        if self.deep_supervision and self.training:  # eval: full resolution only
+        if self.deep_supervision and self.training:
             return [final, *reversed(auxiliary)]
         return final
 
