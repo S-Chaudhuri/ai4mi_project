@@ -150,16 +150,19 @@ def find_ct(patient_dir: Path) -> Path:
 
 
 def find_test_patients(src: Path) -> list[str]:
+    """Patient_XX/ folders with a NIfTI, or flat Patient_XX.nii.gz files
+    (the course test.zip unzips to the latter)."""
     if not src.is_dir():
         raise SystemExit(f"test source {src} is not a directory")
     ids = []
     for p in sorted(src.glob("Patient_*")):
-        if not p.is_dir():
-            continue
-        find_ct(p)  # fail early, with the patient name in the message
-        ids.append(p.name)
+        if p.is_dir():
+            find_ct(p)  # fail early, with the patient name in the message
+            ids.append(p.name)
+        elif p.name.endswith(".nii.gz"):
+            ids.append(p.name[: -len(".nii.gz")])
     if not ids:
-        raise SystemExit(f"No Patient_* folders with a NIfTI under {src}")
+        raise SystemExit(f"No Patient_* folders or Patient_XX.nii.gz files under {src}")
     return ids
 
 
@@ -243,8 +246,14 @@ def process_test_patient(patient: str, args: argparse.Namespace) -> list[str]:
     """Like process_patient, but the test set has no labels: CT only, no
     gt.npy, no augmented variants. The body crop falls back to the HU
     threshold alone (zero GT mask)."""
-    src = Path(args.test_source_dir) / patient
-    ct_img = sitk.ReadImage(str(find_ct(src)))
+    src_dir = Path(args.test_source_dir) / patient
+    if src_dir.is_dir():
+        ct_path = find_ct(src_dir)
+    else:
+        ct_path = Path(args.test_source_dir) / f"{patient}.nii.gz"
+        if not ct_path.is_file():
+            raise SystemExit(f"{patient}: no CT in {src_dir} or at {ct_path}")
+    ct_img = sitk.ReadImage(str(ct_path))
 
     spacing = tuple(args.spacing)
     ct_res = resample(ct_img, spacing)

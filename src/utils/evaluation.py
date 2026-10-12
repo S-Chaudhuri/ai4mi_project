@@ -157,21 +157,24 @@ def write_submission(
 
 
 def load_native_ct(ct_root, patient):
-    """Shape and affine of a patient's raw CT, e.g. from the unzipped test set:
-    <ct_root>/<patient>/*.nii.gz."""
-    pdir = Path(ct_root) / patient
-    if not pdir.is_dir():
-        raise FileNotFoundError(f"No {pdir}")
-
-    ct_path = pdir / f"{patient}.nii.gz"
-    if not ct_path.is_file():
-        cands = sorted(p for p in pdir.glob("*.nii.gz") if p.name != "GT.nii.gz")
-        if len(cands) != 1:
-            raise FileNotFoundError(
-                f"No {patient}.nii.gz (or single CT) in {pdir}: "
-                f"{[p.name for p in pdir.glob('*.nii.gz')]}"
-            )
-        ct_path = cands[0]
+    """Shape and affine of a patient's raw CT from the unzipped test set:
+    <ct_root>/<patient>/*.nii.gz or a flat <ct_root>/<patient>.nii.gz."""
+    ct_root = Path(ct_root)
+    pdir = ct_root / patient
+    if pdir.is_dir():
+        ct_path = pdir / f"{patient}.nii.gz"
+        if not ct_path.is_file():
+            cands = sorted(p for p in pdir.glob("*.nii.gz") if p.name != "GT.nii.gz")
+            if len(cands) != 1:
+                raise FileNotFoundError(
+                    f"No {patient}.nii.gz (or single CT) in {pdir}: "
+                    f"{[p.name for p in pdir.glob('*.nii.gz')]}"
+                )
+            ct_path = cands[0]
+    else:
+        ct_path = ct_root / f"{patient}.nii.gz"
+        if not ct_path.is_file():
+            raise FileNotFoundError(f"No {pdir} or {ct_path}")
 
     nii = nib.load(str(ct_path))
     return np.asarray(nii.dataobj).shape, nii.affine
