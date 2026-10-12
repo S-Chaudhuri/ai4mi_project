@@ -53,12 +53,16 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 
     return list(zip(images, full_labels))
 
+
 def coord_grid(vol_shape, start, size):
     """(3, d, h, w) float32 in [0,1]: normalised (z, y, x) index of every voxel in the box."""
-    axes = [np.clip(np.arange(s, s + n, dtype=np.float32) / max(full - 1, 1), 0, 1)
-            for full, s, n in zip(vol_shape, start, size)]
+    axes = [
+        np.clip(np.arange(s, s + n, dtype=np.float32) / max(full - 1, 1), 0, 1)
+        for full, s, n in zip(vol_shape, start, size)
+    ]
     z, y, x = np.meshgrid(*axes, indexing="ij")
     return np.stack([z, y, x])
+
 
 class SliceDataset(Dataset):
     def __init__(
@@ -107,7 +111,9 @@ class SliceDataset(Dataset):
         return data_dict
 
 
-def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
+def make_3d_dataset(
+    root_dir: Path, subset: str, skip_aug: bool = False
+) -> List[Dict[str, Any]]:
     # 1. Resolve image and ground-truth directories
     subset_dir = root_dir / subset
     img_dir = (
@@ -126,10 +132,18 @@ def make_3d_dataset(root_dir: Path, subset: str) -> List[Dict[str, Any]]:
     for img_path in sorted(img_dir.glob("*.png")):
         # Extract patient ID prefix (e.g., "Patient_01" from "Patient_01_045.png")
         pid = "_".join(img_path.stem.split("_")[:2])
+
+        if skip_aug and "a" in pid.split("_")[1]:
+            continue
+
         img_groups[pid].append(img_path)
 
     for gt_path in sorted(gt_dir.glob("*.png")):
         pid = "_".join(gt_path.stem.split("_")[:2])
+
+        if skip_aug and "a" in pid.split("_")[1]:
+            continue
+
         gt_groups[pid].append(gt_path)
 
     # 3. Pair 3D patient volumes
@@ -173,6 +187,7 @@ class BoxDataset(Dataset):
         num_classes: int = 5,
         fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
+        skip_aug: bool = False,
     ):
         self.root_dir = Path(root_dir)
         self.subset = subset
@@ -183,7 +198,7 @@ class BoxDataset(Dataset):
         self.fg_prob = fg_prob
         self.debug = debug
 
-        self.items = make_3d_dataset(self.root_dir, self.subset)
+        self.items = make_3d_dataset(self.root_dir, self.subset, skip_aug=skip_aug)
         if self.debug:
             self.items = self.items[:10]
 
