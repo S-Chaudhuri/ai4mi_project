@@ -153,8 +153,7 @@ def run_eval(config: Config):
         pred_xyz = to_native_space(pred, meta)
 
         if config.eval.split == "test":
-            # No labels to score against: check the geometry against the CT
-            # itself and write the prediction.
+            # No labels to score against, pred against ct itself
             ct_shape, affine = load_native_ct(
                 config.paths.data_path / "test", item["stem"]
             )
