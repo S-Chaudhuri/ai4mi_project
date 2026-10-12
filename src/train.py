@@ -162,6 +162,7 @@ def get_model(config: Config):
             kernels=kernels,
             factor=factor,
             dropoutRate=config.model.dropout,
+            deep_supervision=config.model.deep_supervision,
         )
     elif config.model.name == "ENet":
         return ENet(
@@ -359,6 +360,16 @@ def setup(
 
 
 def get_loss_func(config: Config):
+    loss = _main_loss(config)
+    # Deep supervision: the model returns [full res, 1/2, 1/4, ...] in training;
+    # the wrapper applies the loss to every level (falls back to the plain loss
+    # for a single output, e.g. in validation)
+    if config.model.is_3d and config.model.deep_supervision:
+        return DeepSupervisionLoss(loss=loss)
+    return loss
+
+
+def _main_loss(config: Config):
     if config.training.mode == "full":
         idk = list(
             range(config.dataset.num_classes)
@@ -602,9 +613,19 @@ def runTraining(config: Config):
 
                     with torch.autocast(device_type=device_type, dtype=amp_dtype):
                         pred_logits = net(img)
-                        pred_probs = F.softmax(
-                            config.model.temperature * pred_logits.float(), dim=1
+                        # Deep supervision returns [full res, 1/2, 1/4, ...]:
+                        # the loss uses every level, the metrics (and the
+                        # skeleton loss) only the full-resolution output
+                        outputs = (
+                            pred_logits
+                            if isinstance(pred_logits, (list, tuple))
+                            else [pred_logits]
                         )
+                        all_probs = [
+                            F.softmax(config.model.temperature * o.float(), dim=1)
+                            for o in outputs
+                        ]
+                        pred_probs = all_probs[0]
 
                         # Metrics computation, not used for training
                         pred_class = probs2class(pred_probs)
@@ -639,7 +660,7 @@ def runTraining(config: Config):
 
                     # Computed outside autocast: under CUDA fp16 autocast the
                     # einsum in the loss is promoted to fp16 and overflows
-                    loss = loss_fn(pred_probs, gt)
+                    loss = loss_fn(all_probs if len(all_probs) > 1 else pred_probs, gt)
                     # Skeleton Recall on top, training only: validation keeps
                     # the plain loss so it stays comparable across runs
                     if opt is not None and skeleton_loss_fn is not None:

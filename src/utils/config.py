@@ -103,9 +103,11 @@ class ModelConfig:
     # Temperature applied to the logits before softmax (1 = no scaling).
     temperature: float = 1.0
 
-    # Use deep supervision: the model returns a list of outputs at different
-    # resolutions, and the loss is computed on all of them. This is only
-    # supported by UNet3D and VNet3D, and is off by default.
+    # Use deep supervision: during training the model returns a list of outputs
+    # at different resolutions, and the loss is computed on all of them
+    # (DeepSupervisionLoss). Supported by all 3D models (UNet3D, VNet3D,
+    # ResUNet3D, MedNeXt3D); validation and evaluation use the full-resolution
+    # output only. Off by default.
     deep_supervision: bool = False
 
 
