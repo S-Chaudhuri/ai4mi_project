@@ -291,7 +291,7 @@ class BoxDataset(Dataset):
             del item["images"], item["gts"]
 
             if self.skeleton_classes:
-            print(f"   Precomputed GT centrelines for classes {tuple(self.skeleton_classes)}") 
+                print(f"  Precomputed GT centrelines for classes {tuple(self.skeleton_classes)}")
 
         n_vox = sum(v["img_vol"].size for v in self.items)
         print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")

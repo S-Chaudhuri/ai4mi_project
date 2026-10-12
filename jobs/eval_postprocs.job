@@ -1,0 +1,65 @@
+#!/bin/bash
+#SBATCH --job-name=eval_pp
+#SBATCH --partition=rome
+#SBATCH --cpus-per-task=8
+#SBATCH --time=04:00:00
+#SBATCH --output=log_pp/%x/%j/out.log
+#SBATCH --constraint=scratch-node
+
+# Load the 2023 stack first, then Python 3.11
+module load 2023
+module load Python/3.11.3-GCCcore-12.3.0
+
+echo ">> Using python: $(which python)"
+echo ">> Python version: $(python --version)"
+
+MODEL=${1:-UNet3D}
+shift
+
+# Automatically assign weights and channels based on the model argument
+if [[ "$MODEL" == "MedNeXt3D_3ch" ]]; then
+    WEIGHTS="best_weights/MedNeXt3D_3ch/bestweights.pt"
+    CHANNELS=3
+elif [[ "$MODEL" == "ResUNet3D_3ch" ]]; then
+    WEIGHTS="best_weights/ResUNet3D_3ch/bestweights.pt"
+    CHANNELS=3
+else
+    CHANNELS=${CHANNELS:-1}
+fi
+
+DATASET=SEGTHOR_3D_${CHANNELS}ch
+SPLIT=${SPLIT:-val}
+
+if [[ -z "$WEIGHTS" ]]; then
+    echo "Set WEIGHTS=path/to/bestweights.pt" >&2
+    exit 1
+fi
+
+RESULTS_DIR=${RESULTS_DIR:-$(dirname "$WEIGHTS")}
+TARS=/scratch-shared/scur0088/tars
+VAL_PATIENTS="Patient_01 Patient_13 Patient_22 Patient_28 Patient_30"
+
+# Extract dataset safely
+tar -xf "$TARS/$DATASET.tar" -C "$TMPDIR" \
+    "$DATASET/dataset.json" "$DATASET/$SPLIT"
+
+# Only the 5 original GT NIfTIs
+mkdir -p "$TMPDIR/raw"
+PATTERNS=()
+for p in $VAL_PATIENTS; do PATTERNS+=("*$p/GT*"); done
+tar -xf "$TARS/segthor_train_full.tar" -C "$TMPDIR/raw" --wildcards "${PATTERNS[@]}"
+
+RAW_GT_DIR=$(find "$TMPDIR/raw" -type d -name "*train_full" -o -name "*segthor_train_full" | head -n 1)
+if [[ -z "$RAW_GT_DIR" ]]; then
+    RAW_GT_DIR="$TMPDIR/raw"
+fi
+echo ">> raw GT dataset: $RAW_GT_DIR"
+
+python -u src/eval_all.py \
+    --model "$MODEL" \
+    --weights "$WEIGHTS" \
+    --dataset_dir "$TMPDIR/$DATASET" \
+    --raw_gt_dir "$RAW_GT_DIR" \
+    --output_dir "$RESULTS_DIR/eval" \
+    "$@"
+
