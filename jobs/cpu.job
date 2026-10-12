@@ -14,12 +14,15 @@ export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
 
 # Stream dataset to nvme on node for fast access (if the partition has it);
 # otherwise drop the tar and point --paths.data_path at /scratch-shared
-tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_2D.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_3D_1ch.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_3D_3ch.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/segthor_train_full.tar -C "$TMPDIR"
 
-uv run python -O /home/scur0088/project/src/train.py \
-  --config /home/scur0088/project/configs/3d.yaml \
+uv run python -O src/train.py \
+  --config configs/3d.yaml \
   --paths.data_path "$TMPDIR" \
-  --paths.results_dir /home/scur0088/project/results/3d_cpu_sweep/%j \
+  --paths.results_dir results/segthor_3d_cpu_%j \
   --training.no-gpu \
   --runtime.amp_dtype none \
   --runtime.num_workers 8

@@ -8,28 +8,6 @@
 #SBATCH --output=logs/sweep_%A_%a.out
 #SBATCH --error=logs/sweep_%A_%a.err
 
-# ~100 parallel CPU random-search runs with very few queue entries.
-#
-# One array task = one full node = RUNS_PER_NODE independent training runs.
-# Each run is its own process with its own SWEEP_SEED, results dir and wandb
-# run. 13 tasks x 8 runs = 104 runs, but only 13 running jobs and ONE pending
-# array entry in the queue, so per-user job limits are a non-issue and no
-# "%N" throttling is needed.
-#
-# Seed for run i of task t is t * RUNS_PER_NODE + i, so every run gets a
-# unique, reproducible point from luuk_sweep.yaml.
-#
-# Counts: 0-9 -> 80 runs, 0-11 -> 96, 0-12 -> 104. Force partitions with:
-#   sbatch --array=0-6  --partition=genoa jobs/sweep.job
-#   sbatch --array=7-12 --partition=rome  jobs/sweep.job
-# (seed ranges stay unique because the task ids differ).
-# Rerun only failed tasks: sbatch --array=13,42,77 jobs/sweep.job
-#
-# Check your limits before submitting:
-#   sacctmgr show assoc user=$USER format=Account,Partition,MaxJobs,MaxSubmit,MaxJobsPU,MaxSubmitPU
-#   sacctmgr show qos format=Name,MaxJobsPU,MaxSubmitPU,MaxTRESPU
-#   squeue -u $USER -t PD | wc -l
-
 export PATH="$HOME/.local/bin:$PATH"
 
 RUNS_PER_NODE=8
@@ -37,19 +15,22 @@ WORKERS_PER_RUN=4
 
 # --exclusive gives us every core on the node (96 on genoa, 64 on rome), so
 # each run gets an equal slice: torch threads + data-loading workers.
-CORES_PER_RUN=$(( $(nproc) / RUNS_PER_NODE ))
-THREADS_PER_RUN=$(( CORES_PER_RUN - WORKERS_PER_RUN ))
-if (( CORES_PER_RUN < 8 )); then
+CORES_PER_RUN=$(($(nproc) / RUNS_PER_NODE))
+THREADS_PER_RUN=$((CORES_PER_RUN - WORKERS_PER_RUN))
+if ((CORES_PER_RUN < 8)); then
   echo "!! only $(nproc) cores visible, expected a full node" >&2
   exit 1
 fi
 
 # One extraction per node, shared read-only by the 8 runs on it
-tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_2D.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_3D_1ch.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/SEGTHOR_3D_3ch.tar -C "$TMPDIR"
+tar -xf /scratch-shared/scur0231/segthor_train_full.tar -C "$TMPDIR"
 
 PROJECT=/home/scur0088/project
 PREFIX="$PROJECT/logs/sweep_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-SEED_BASE=$(( SLURM_ARRAY_TASK_ID * RUNS_PER_NODE ))
+SEED_BASE=$((SLURM_ARRAY_TASK_ID * RUNS_PER_NODE))
 
 echo ">> $(hostname) ($SLURM_JOB_PARTITION): $(nproc) cores -> $RUNS_PER_NODE runs x ($THREADS_PER_RUN torch threads + $WORKERS_PER_RUN workers)"
 
@@ -57,10 +38,10 @@ pids=()
 for i in $(seq 0 $((RUNS_PER_NODE - 1))); do
   run=$((SEED_BASE + i))
   OMP_NUM_THREADS=$THREADS_PER_RUN \
-  MKL_NUM_THREADS=$THREADS_PER_RUN \
-  OPENBLAS_NUM_THREADS=$THREADS_PER_RUN \
-  SWEEP_SEED=$run \
-  uv run --no-sync python -O "$PROJECT/src/train.py" \
+    MKL_NUM_THREADS=$THREADS_PER_RUN \
+    OPENBLAS_NUM_THREADS=$THREADS_PER_RUN \
+    SWEEP_SEED=$run \
+    uv run --no-sync python -O "$PROJECT/src/train.py" \
     --config "$PROJECT/configs/luuk_sweep.yaml" \
     --paths.data_path "$TMPDIR" \
     --paths.results_dir "$PROJECT/results/3d_cpu_sweep/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${i}" \
@@ -68,7 +49,7 @@ for i in $(seq 0 $((RUNS_PER_NODE - 1))); do
     --runtime.num_threads "$THREADS_PER_RUN" \
     --runtime.num_workers "$WORKERS_PER_RUN" \
     --wandb.notes "sweep run $run on $SLURM_JOB_PARTITION node $SLURM_ARRAY_TASK_ID" \
-    > "${PREFIX}_${i}.log" 2>&1 &
+    >"${PREFIX}_${i}.log" 2>&1 &
   pids+=($!)
 done
 
