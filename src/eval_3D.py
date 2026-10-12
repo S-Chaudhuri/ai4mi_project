@@ -4,9 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from src.postprocess import POSTPROCESSING, postprocess
-from src.train import get_model
-from src.utils.config import Config
-from src.utils.dataset import BoxDataset, window_starts
+from src.utils.config import Config, get_config
+from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.evaluation import (
     evaluate_patient,
     load_native_gt,
@@ -56,6 +55,8 @@ def predict_volume(net, img, box, overlap, K, batch_size, device, temperature=1.
 
 
 def run_eval(config: Config):
+    from src.train import check_in_channels, get_model, img_transform_3d
+
     if not config.model.is_3d:
         raise ValueError("eval_3D requires a 3D model: set --model.is-3d")
 
@@ -76,9 +77,7 @@ def run_eval(config: Config):
     )
     K = config.dataset.num_classes
     net = get_model(config)
-    net.load_state_dict(
-        torch.load(config.eval.weights, map_location=device, weights_only=True)
-    )
+    net.load_state_dict(torch.load(config.eval.weights, map_location=device))
     net.to(device).eval()
 
     if config.paths.results_dir is None:
@@ -136,3 +135,7 @@ def run_eval(config: Config):
 
     write_csv(results, eval_results_dir / "metrics.csv")
     print(f">> Wrote metrics to {eval_results_dir / 'metrics.csv'}")
+
+
+if __name__ == "__main__":
+    run_eval(get_config())
