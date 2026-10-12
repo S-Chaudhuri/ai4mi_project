@@ -119,3 +119,47 @@ class DeepSupervisionLoss:
                 ).to(weak_target.dtype)
             loss = loss + weight * self.loss(p, g)
         return loss / sum(weights)
+class SkeletonRecallLoss:
+    def __init__(self, *args, **kwargs):
+        print(f"Initialized dummy {self.__class__.__name__}")
+    def __call__(self, *args, **kwargs):
+        return torch.tensor(0.0)
+
+
+class SkeletonRecallLoss:
+    """Skeleton Recall loss (Kirchhoff et al., ECCV 2024) for thin tubular
+    structures (esophagus, trachea).
+
+    The GT centreline of each class is precomputed in the dataset (a slightly
+    dilated skeleton, see utils.dataset.tubed_skeleton). The loss is
+    1 - the fraction of that centreline the prediction covers:
+
+        recall_k = sum(p_k * skel_k) / sum(skel_k)
+
+    so a break anywhere along the tube is penalised, which Dice barely notices.
+    Only the predicted probabilities are differentiated; the skeleton is a
+    fixed target, so it costs almost nothing per step.
+    """
+
+    def __init__(self, *, classes=(1, 3)):
+        self.classes = tuple(classes)
+        print(f"Initialized {self.__class__.__name__} with classes={self.classes}")
+
+    def __call__(self, pred_softmax, skel):
+        """pred_softmax: (B, K, D, H, W) probabilities, the full-resolution output.
+        skel: (B, D, H, W) integer map, voxel = class id on that class's
+        centreline, 0 elsewhere."""
+        if isinstance(pred_softmax, (list, tuple)):  # deep supervision: full res only
+            pred_softmax = pred_softmax[0]
+        dims = tuple(range(1, skel.ndim))
+        losses = []
+        for k in self.classes:
+            s = (skel == k).float()
+            n = s.sum(dim=dims)
+            present = n > 0  # boxes without this organ's centreline don't count
+            if present.any():
+                covered = (pred_softmax[:, k] * s).sum(dim=dims)
+                losses.append(1 - (covered[present] / n[present]).mean())
+        if not losses:  # no centreline in the whole batch: zero loss, keeps the graph
+            return pred_softmax.sum() * 0.0
+        return torch.stack(losses).mean()

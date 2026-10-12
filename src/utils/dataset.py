@@ -166,6 +166,33 @@ class SliceDataset(Dataset):
 #     )
 #     return items
 
+def tubed_skeleton(gt: np.ndarray, classes=(1, 3)) -> np.ndarray:
+    """Centreline target for the Skeleton Recall loss.
+
+    (D, H, W) class labels -> (D, H, W) uint8: the skeleton of each class in
+    `classes`, dilated by one voxel into a thin tube and kept inside that
+    class's mask, labelled with the class id; 0 elsewhere.
+    """
+    from scipy import ndimage
+    from skimage.morphology import skeletonize
+
+    skel = np.zeros(gt.shape, dtype=np.uint8)
+    for k in classes:
+        mask = gt == k
+        if not mask.any():
+            continue
+        # Crop to the organ: skeletonize on the whole volume is much slower
+        box = tuple(
+            slice(max(int(idx.min()) - 2, 0), int(idx.max()) + 3)
+            for idx in np.nonzero(mask)
+        )
+        m = mask[box]
+        tube = ndimage.binary_dilation(
+            skeletonize(m), structure=ndimage.generate_binary_structure(3, 1)
+        ) & m
+        skel[box][tube] = k
+    return skel
+
 def make_3d_dataset(
     root_dir: Path,
     subset: str,
@@ -220,6 +247,7 @@ class BoxDataset(Dataset):
         fg_prob: float = 0.5,  # chance a box is forced to contain foreground
         debug: bool = False,
         skip_augmented: bool = False,
+        skeleton_classes: Optional[Tuple[int, ...]] = None,
     ):
         self.root_dir = Path(root_dir)
         self.subset = subset
@@ -229,6 +257,10 @@ class BoxDataset(Dataset):
         self.num_classes = num_classes
         self.fg_prob = fg_prob
         self.debug = debug
+
+        # Classes whose GT centreline is precomputed for the Skeleton Recall
+        # loss (returned as "skel" with every box); None = no skeletons
+        self.skeleton_classes = skeleton_classes
 
         self.items = make_3d_dataset(self.root_dir, self.subset, skip_augmented)
         if self.debug:
@@ -253,7 +285,13 @@ class BoxDataset(Dataset):
             item["fg_coords"] = [
                 np.argwhere(item["gt_cls"] == k) for k in range(1, num_classes)
             ]
+
+            if self.skeleton_classes:
+                item["skel"] = tubed_skeleton(item["gt_cls"], self.skeleton_classes)
             del item["images"], item["gts"]
+
+            if self.skeleton_classes:
+            print(f"   Precomputed GT centrelines for classes {tuple(self.skeleton_classes)}") 
 
         n_vox = sum(v["img_vol"].size for v in self.items)
         print(f">> Created {subset} dataset with {len(self.items)} 3D patient volumes.")
@@ -353,7 +391,16 @@ class BoxDataset(Dataset):
             f"Sub-box shape {tuple(img.shape[1:])} does not match expected {tuple(self.sub_box_size)}"
         )
 
-        return {"images": img, "gts": gt, "stems": item["stem"]}
+        out = {"images": img, "gts": gt, "stems": item["stem"]}
+        if "skel" in item:
+            # Same box as the GT, padded with 0 (no centreline) like the GT
+            skel_box = item["skel"][ds : ds + d, hs : hs + h, ws : ws + w]
+            skel = torch.from_numpy(np.ascontiguousarray(skel_box))
+            pd, ph, pw = d - skel.shape[0], h - skel.shape[1], w - skel.shape[2]
+            if pd or ph or pw:
+                skel = F.pad(skel, (0, pw, 0, ph, 0, pd), value=0)
+            out["skel"] = skel
+        return out
 
 
 def window_starts(full: int, size: int, step: int) -> List[int]:
