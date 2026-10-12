@@ -5,8 +5,6 @@ import torch.nn.functional as F
 import json
 
 from src.postprocess import POSTPROCESSING, postprocess
-from src.train import check_in_channels, get_model, img_transform_3d
-from src.utils.config import Config
 from src.utils.config import Config, get_config
 from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.evaluation import (
