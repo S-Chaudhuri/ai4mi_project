@@ -42,6 +42,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src import eval_3D
+from scripts.generate_example_yaml_config import generate_yaml_config
 from src.utils.config import Config, get_config
 from src.utils.dataset import GridBoxDataset, SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
@@ -435,10 +436,9 @@ def runTraining(config: Config):
 
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
-    result_dir = config.paths.results_dir
-    # Guaranteed by get_config to be a path
-    if result_dir is None:
-        raise
+    result_dir: Path = config.paths.dest
+    result_dir.mkdir(parents=True, exist_ok=True)
+    generate_yaml_config(config, result_dir / "config.yaml")
 
     device_type = "cuda" if config.training.gpu else "cpu"
 
@@ -745,10 +745,13 @@ def main():
     seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
 
     # Setup wandb
+    wandb_config = dataclasses.asdict(config)
+    if getattr(config, "sweep", None):
+        wandb_config["sweep"] = {"seed": config.sweep_seed, **config.sweep}
     wandb.init(
         entity=config.wandb.entity,
         project=config.wandb.project,
-        config=dataclasses.asdict(config),
+        config=wandb_config,
         dir=config.wandb.dir or (autoroot.root / "results" / "wandb"),
         notes=config.wandb.notes,
     )

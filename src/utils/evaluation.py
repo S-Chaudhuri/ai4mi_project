@@ -83,6 +83,7 @@ def load_native_gt(data_root, patient, split_dir="train", dataset_name="SegTHOR"
             f"No GT*.nii* for {patient} under {base}/(train|val|test)/{patient}/. "
             f"{base.name} contains: {have}; {split_dir}/ starts with: {sample}"
         )
+
     return (
         np.asarray(nii.dataobj).astype(np.uint8),
         tuple(float(z) for z in nii.header.get_zooms()[:3]),
