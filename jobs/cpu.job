@@ -19,7 +19,7 @@ tar -xf /scratch-shared/scur0088/data/segthor.tar -C "$TMPDIR"
 uv run python -O /home/scur0088/project/src/train.py \
   --config /home/scur0088/project/configs/3d.yaml \
   --paths.data_path "$TMPDIR" \
-  --paths.results_dir /home/scur0088/project/results/segthor_3d_cpu_%j \
+  --paths.results_dir /home/scur0088/project/results/3d_cpu_sweep/%j \
   --training.no-gpu \
   --runtime.amp_dtype none \
   --runtime.num_workers 8

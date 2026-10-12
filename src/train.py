@@ -651,11 +651,13 @@ def runTraining(config: Config):
             "val/dice": ((2 * inter_val[e, 1:] + 1e-8) / (union_val[e, 1:] + 1e-8))
             .mean()
             .item(),
-            "val/hd95": masked_mean(
-                log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
-            ).item(),
             # "val/acc": acc_val,
         }
+        if calculate_hd95:
+            metrics["val/hd95"] = masked_mean(
+                log_hd95_val[e, :, 1:], log_present_val[e, :, 1:]
+            ).item()
+
         if config.runtime.hd95_in_train:
             metrics["train/hd95"] = masked_mean(
                 log_hd95_tra[e, :, 1:], log_present_tra[e, :, 1:]

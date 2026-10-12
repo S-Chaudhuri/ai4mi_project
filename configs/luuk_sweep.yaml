@@ -1,0 +1,37 @@
+dataset:
+  name: <choice SEGTHOR_3D_1ch SEGTHOR_3D_3ch segthor_train_full>
+  num_classes: 5
+  fg_prob: <uniform 0.3 0.8>
+
+model:
+  name: <choice ResUNet3D MedNeXt3D>
+  is_3d: true
+  factor: 2
+  kernels: <choice 8 16 24 32>
+  dropout: <uniform 0.0 0.4>
+
+training:
+  epochs: 50
+  batch_size: 8
+  batches_per_epoch: 30
+  lr: <loguniform 0.00001 0.001>
+  weight_decay: <loguniform 0.000001 0.01>
+  scheduler: <choice cosine none>
+  mode: full
+  loss: <choice ce dice_ce>
+
+augmentation:
+  enabled: <choice true false>
+  noise_prob: <uniform 0.0 0.8>
+  noise_level: <uniform 0.01 0.15>
+  gamma_prob: <uniform 0.0 0.8>
+  gamma_range: [0.7, 1.5]
+  contrast_prob: <uniform 0.0 0.8>
+  contrast_range: [0.8, 1.25]
+
+runtime:
+  num_workers: 8
+  amp_dtype: none
+
+wandb:
+  project: SEGTHOR-3D-Sweep
