@@ -172,7 +172,7 @@ class VNet3D(nn.Module):
             for i in reversed(range(1, depth))
         ) if deep_supervision else nn.ModuleList()
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor | list[Tensor]:
         skips: list[Tensor] = []
         for enc, down in zip(self.encoders, self.downs):
             x = enc(x)
@@ -180,7 +180,8 @@ class VNet3D(nn.Module):
             x = down(x)
 
         x = self.bottleneck(x)
-        
+
+        use_ds = self.deep_supervision and self.training
         auxiliary: list[Tensor] = []
         for i, (dec, skip) in enumerate(zip(self.decoders, reversed(skips))):
             x = dec(x, skip)

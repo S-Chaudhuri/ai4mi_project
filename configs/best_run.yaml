@@ -1,0 +1,86 @@
+augmentation:
+  contrast_prob: 0.3
+  contrast_range:
+    - 0.8
+    - 1.25
+  enabled: false
+  gamma_prob: 0.3
+  gamma_range:
+    - 0.7
+    - 1.5
+  noise_level: 0.05
+  noise_prob: 0.5
+dataset:
+  box_size:
+    - 132
+    - 132
+    - 128
+  coarse: false
+  coarse_size:
+    - 64
+    - 64
+    - 64
+  fg_prob: 0.7
+  fold: 0
+  name: SEGTHOR_3D_1ch
+  num_classes: 5
+  retains: 5
+  shape:
+    - 256
+    - 256
+  skip_augmented: true
+  use_coords: false
+eval:
+  enabled: true
+  overlap: 0.5
+  patient_id: null
+  postprocess:
+    - lcc
+  split: val
+  submission: true
+  weights: null
+model:
+  dropout: 0.01
+  factor: 2
+  in_channels: 1
+  is_3d: true
+  kernels: 16
+  name: VNet3D
+  temperature: 1.0
+paths:
+  data_path: /scratch-node/scur0088.27859636
+  raw_dataset: segthor_train_full
+  results_dir: results/SEGTHOR_3D_1ch/11-10-2026_00-02-46
+profiler:
+  active: 3
+  enabled: false
+  output_dir: null
+  profile_memory: false
+  record_shapes: false
+  wait: 1
+  warmup: 1
+  with_flops: false
+  with_modules: false
+  with_stack: false
+runtime:
+  amp_dtype: none
+  cudnn_benchmark: false
+  debug: false
+  hd95_in_train: false
+  hd95_interval: 5
+  num_workers: 8
+training:
+  batch_size: 8
+  batches_per_epoch: 100
+  betas:
+    - 0.9
+    - 0.999
+  dice_weight: 1.0
+  epochs: 50
+  gpu: true
+  loss: dice_ce
+  lr: 0.0005
+  mode: full
+  scheduler: cosine
+  seed: 42
+  weight_decay: 0.005
