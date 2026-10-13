@@ -88,8 +88,8 @@ def main() -> None:
         help="results run dir with config.yaml, bestweights.pt and eval/",
     )
     parser.add_argument("--out", type=Path, default=autoroot.root / "submission")
-    parser.add_argument("--branch", default="submission",
-                        help="branch to pack into the git bundle")
+    parser.add_argument("--branch", default=None,
+                        help="branch to pack into the git bundle (default: current)")
     parser.add_argument("--skip-bundle", action="store_true")
     parser.add_argument("--skip-tar", action="store_true")
     args = parser.parse_args()
@@ -151,6 +151,10 @@ def main() -> None:
     if args.skip_bundle:
         print(">> skipped bundle")
     else:
+        branch = args.branch or subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=autoroot.root, check=True,
+        ).stdout.strip()
         dirty = subprocess.run(
             ["git", "status", "--porcelain"], capture_output=True, text=True,
             cwd=autoroot.root, check=False,
@@ -159,10 +163,10 @@ def main() -> None:
             print(">> WARNING: uncommitted changes will NOT be in the bundle")
         subprocess.run(
             ["git", "bundle", "create",
-             str(group_dir / f"group-{GROUP}.bundle"), f"refs/heads/{args.branch}"],
+             str(group_dir / f"group-{GROUP}.bundle"), f"refs/heads/{branch}"],
             cwd=autoroot.root, check=True,
         )
-        print(f">> bundle of {args.branch} written")
+        print(f">> bundle of {branch} written")
 
     # 5. tar
     if args.skip_tar:

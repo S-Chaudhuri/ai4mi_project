@@ -7,7 +7,8 @@ Steps 2–5 in one go: `bash scripts/submit.sh <config.yaml> <bestweights.pt> [r
 
 ## What you need
 
-- The repo, at the commit you want to submit (this branch: `submission`).
+- The repo, at the commit you want to submit (`make_submission.py` bundles the
+  current branch by default).
 - Data on the machine:
   - `data/SEGTHOR_3D_1ch/` — preprocessed 3D dataset (`train/`, `val/`);
   - `data/segthor_full/` — raw NIfTIs (for the GT and the native grid);
@@ -82,7 +83,8 @@ uv run python scripts/make_submission.py --run $RUN
 Produces `submission/group-12/` and `submission/group-12.tar.zst`:
 the model as a full torch module (`bestmodel-group-12.pkl`), val
 predictions/labels/metrics, test predictions and a git bundle of the
-`submission` branch. Run it with a **clean working tree** and all commits
+git branch (the current one by default, `--branch` to override). Run it with a
+**clean working tree** and all commits
 synced: the bundle only contains committed code, and the pkl must load with
 the bundled code.
 
