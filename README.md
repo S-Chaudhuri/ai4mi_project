@@ -116,7 +116,7 @@ its own `bestweights.pt` after the last epoch. Other options:
 - `--eval.submission`: also write per-patient prediction NIfTIs under
   `eval/submission/`.
 - `--eval.postprocess lcc`: largest connected component for heart, trachea and
-  aorta before scoring and writing (`src/postprocess.py`, several steps allowed).
+  aorta before scoring and writing (`src/utils/postprocess.py`, several steps allowed).
 
 `src/eval.py` is the older 2D single-patient inference script.
 
@@ -222,7 +222,6 @@ jobs/               Slurm scripts
 src/train.py        training entrypoint (2D + 3D)
 src/eval_3D.py      3D sliding-window inference + metrics
 src/eval.py         2D single-patient inference
-src/postprocess.py  postprocessing steps for evaluation
 src/models/         ShallowNet, ENet, UNet3D, VNet3D, ResUNet3D, MedNeXt3D
 src/preprocessing/  slicing, HU windows, offline augmentation, resampling
 src/utils/          config, datasets, losses, metrics, augmentation

@@ -21,7 +21,7 @@ Methods:
 
 Usage:
     # a folder of prediction NIfTIs (geometry is kept)
-    python src/postprocess.py --src results/run/pred --dest results/run/pred_pp --steps lcc
+    python src/utils/postprocess.py --src results/run/pred --dest results/run/pred_pp --steps lcc
 
     # during evaluation
     python src/eval_3D.py ... --eval.postprocess lcc
@@ -48,7 +48,9 @@ def keep_largest_component(
 
     connectivity: 6 (voxels sharing a face) or 26 (also edges and corners).
     """
-    structure = ndimage.generate_binary_structure(pred.ndim, 1 if connectivity == 6 else pred.ndim)
+    structure = ndimage.generate_binary_structure(
+        pred.ndim, 1 if connectivity == 6 else pred.ndim
+    )
     out = pred.copy()
     for k in classes:
         labels, n = ndimage.label(pred == k, structure=structure)
@@ -71,7 +73,9 @@ def postprocess(pred: np.ndarray, steps: Sequence[str]) -> np.ndarray:
     """Apply the named postprocessing steps to a label map, in order."""
     unknown = [s for s in steps if s not in POSTPROCESSING]
     if unknown:
-        raise ValueError(f"Unknown postprocessing {unknown}, available: {list(POSTPROCESSING)}")
+        raise ValueError(
+            f"Unknown postprocessing {unknown}, available: {list(POSTPROCESSING)}"
+        )
     for step in steps:
         pred = POSTPROCESSING[step](pred)
     return pred
@@ -89,7 +93,9 @@ def postprocess_file(src: Path, dest: Path, steps: Sequence[str]) -> dict[int, i
     dest.parent.mkdir(parents=True, exist_ok=True)
     sitk.WriteImage(out_img, str(dest))
 
-    return {int(k): int(((pred == k) & (out != k)).sum()) for k in np.unique(pred) if k != 0}
+    return {
+        int(k): int(((pred == k) & (out != k)).sum()) for k in np.unique(pred) if k != 0
+    }
 
 
 def main(args: argparse.Namespace) -> None:
@@ -105,16 +111,26 @@ def main(args: argparse.Namespace) -> None:
     print(f">> Postprocessing {args.steps} on {len(pairs)} file(s)")
     for s, d in pairs:
         removed = postprocess_file(s, d, args.steps)
-        print(f"  {s.name}: removed " + ", ".join(f"class {k}: {v} vox" for k, v in removed.items()))
+        print(
+            f"  {s.name}: removed "
+            + ", ".join(f"class {k}: {v} vox" for k, v in removed.items())
+        )
     print(f">> wrote {dest}")
 
 
 def get_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Postprocessing for SegTHOR predictions")
-    parser.add_argument("--src", required=True, help="Prediction .nii.gz file or folder")
+    parser = argparse.ArgumentParser(
+        description="Postprocessing for SegTHOR predictions"
+    )
+    parser.add_argument(
+        "--src", required=True, help="Prediction .nii.gz file or folder"
+    )
     parser.add_argument("--dest", required=True, help="Output file or folder")
     parser.add_argument(
-        "--steps", nargs="+", default=["lcc"], choices=list(POSTPROCESSING),
+        "--steps",
+        nargs="+",
+        default=["lcc"],
+        choices=list(POSTPROCESSING),
         help="Postprocessing steps, applied in order",
     )
     return parser.parse_args()

@@ -32,7 +32,7 @@ training:
 eval:
   enabled: true
   submission: true
-  # Largest connected component for heart / trachea / aorta (src/postprocess.py)
+  # Largest connected component for heart / trachea / aorta (src/utils/postprocess.py)
   postprocess: [lcc]
 
 augmentation:
@@ -45,3 +45,4 @@ runtime:
 wandb:
   project: SEGTHOR-3D
   notes: First run of 3D models on SEGTHOR dataset. Using UNet3D, ResUNet3D, VNet3D, and MedNeXt3D architectures. Training for 50 epochs with batch size of 8 and learning rate of 0.0005. Using cosine scheduler and dice_ce loss function. Weight decay set to 0.005. Evaluation enabled with submission generation.
+
