@@ -18,6 +18,11 @@ Methods:
             legitimately split (or partly missed), and keeping only its
             largest piece would delete true positives.
     lcc26   Same, with 26-connectivity (also edges and corners).
+    esoph   Remove small esophagus components (6-connectivity) below a volume
+            threshold (default 500 mm³), but always keep the largest one. The
+            esophagus is often split into multiple pieces, and small stray
+            blobs are false positives. This method removes them while keeping
+            the main structure.
 
 Usage:
     # a folder of prediction NIfTIs (geometry is kept)
@@ -30,7 +35,7 @@ Usage:
 import argparse
 from functools import partial
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 import SimpleITK as sitk
@@ -38,6 +43,27 @@ from scipy import ndimage
 
 # Organs that are a single connected structure: heart, trachea, aorta
 SINGLE_COMPONENT: tuple[int, ...] = (2, 3, 4)
+
+
+def remove_small_esophagus_components(
+    pred: np.ndarray,
+    min_volume_mm3: float = 500.0,
+    spacing: Sequence[float] = (1.0, 1.0, 1.0),
+) -> np.ndarray:
+    """Drop esophagus components below min_volume_mm3, but always keep the
+    largest one. Other classes are untouched."""
+    structure = ndimage.generate_binary_structure(
+        pred.ndim, pred.ndim
+    )  # 26-connectivity
+    labels, n = ndimage.label(pred == 1, structure=structure)
+    if n <= 1:
+        return pred
+    voxel_mm3 = float(np.prod(spacing))
+    sizes = ndimage.sum_labels(np.ones_like(labels), labels, range(1, n + 1))
+    keep = (sizes * voxel_mm3 >= min_volume_mm3) | (np.arange(n) == sizes.argmax())
+    out = pred.copy()
+    out[np.isin(labels, np.flatnonzero(~keep) + 1)] = 0
+    return out
 
 
 def keep_largest_component(
@@ -63,9 +89,10 @@ def keep_largest_component(
 
 # name -> method. To add a method: write a `pred -> pred` function above and
 # register it here; it is then available everywhere as a step name.
-POSTPROCESSING: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+POSTPROCESSING = {
     "lcc": keep_largest_component,
     "lcc26": partial(keep_largest_component, connectivity=26),
+    "esoph": remove_small_esophagus_components,
 }
 
 
