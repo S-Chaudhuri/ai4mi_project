@@ -424,12 +424,14 @@ def get_config() -> Config:
 
     if config.paths.results_dir is None:
         config.paths.results_dir = _new_results_dir(config)
-    else:
+    elif config.eval.weights is None:
         taken = [p for p in ("bestweights.pt", "eval") if (config.paths.results_dir / p).exists()]
         if taken:
             raise FileExistsError(
                 f"{config.paths.results_dir} already has {taken}: refusing to overwrite, use a new results_dir"
             )
+        config.paths.results_dir.mkdir(parents=True, exist_ok=True)
+    else:
         config.paths.results_dir.mkdir(parents=True, exist_ok=True)
 
     return config

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import json
 
-from src.postprocess import POSTPROCESSING, postprocess
+from src.utils.postprocess import POSTPROCESSING, postprocess
 from src.utils.config import Config, get_config
 from src.utils.dataset import BoxDataset, window_starts, coord_grid
 from src.utils.evaluation import (
