@@ -321,7 +321,7 @@ class EvaluationConfig:
     # Where the per-patient prediction NIfTIs are written (ITK-SNAP overlay).
     submission: bool = False
 
-    # Postprocessing steps from src/postprocess.py, applied in order before
+    # Postprocessing steps from src/utils/postprocess.py, applied in order before
     # both the metrics and the submission NIfTIs (e.g. --eval.postprocess lcc).
     # Empty = raw predictions.
     postprocess: tuple[str, ...] = ()
@@ -425,7 +425,11 @@ def get_config() -> Config:
     if config.paths.results_dir is None:
         config.paths.results_dir = _new_results_dir(config)
     elif config.eval.weights is None:
-        taken = [p for p in ("bestweights.pt", "eval") if (config.paths.results_dir / p).exists()]
+        taken = [
+            p
+            for p in ("bestweights.pt", "eval")
+            if (config.paths.results_dir / p).exists()
+        ]
         if taken:
             raise FileExistsError(
                 f"{config.paths.results_dir} already has {taken}: refusing to overwrite, use a new results_dir"
