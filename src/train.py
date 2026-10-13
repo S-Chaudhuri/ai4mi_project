@@ -376,7 +376,7 @@ def _main_loss(config: Config):
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
         raise ValueError(config.training.mode, config.dataset.name)
-    
+
     foreground_idk = [c for c in idk if c != 0]
 
     if config.training.loss == "ce":
@@ -391,11 +391,11 @@ def _main_loss(config: Config):
         )
     elif config.training.loss == "tversky":
         return TverskyLoss(
-        idk=foreground_idk,
-        is_3d=config.model.is_3d,
-        alpha=config.training.tversky_alpha,
-        beta=config.training.tversky_beta,
-        smooth=config.training.tversky_smooth,
+            idk=foreground_idk,
+            is_3d=config.model.is_3d,
+            alpha=config.training.tversky_alpha,
+            beta=config.training.tversky_beta,
+            smooth=config.training.tversky_smooth,
         )
     else:
         raise ValueError(config.training.loss)
@@ -454,9 +454,9 @@ def runTraining(config: Config):
 
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
-    result_dir: Path = config.paths.dest
+    result_dir: Path = config.paths.results_dir
     result_dir.mkdir(parents=True, exist_ok=True)
-    generate_yaml_config(config, result_dir / "config.yaml")
+    generate_yaml_config(dataclasses.asdict(config), result_dir / "config.yaml")
 
     device_type = "cuda" if config.training.gpu else "cpu"
 
@@ -659,8 +659,10 @@ def runTraining(config: Config):
                     # the plain loss so it stays comparable across runs
                     if opt is not None and skeleton_loss_fn is not None:
                         skel = data["skel"].to(device, non_blocking=True)
-                        loss = loss + config.training.skeleton_weight * skeleton_loss_fn(
-                            pred_probs, skel
+                        loss = (
+                            loss
+                            + config.training.skeleton_weight
+                            * skeleton_loss_fn(pred_probs, skel)
                         )
                     log_loss[e, i] = loss.detach()  # One loss value per batch
 
