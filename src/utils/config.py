@@ -178,7 +178,7 @@ class RuntimeConfig:
     # around epochs and logging easily.
     debug: bool = False
 
-    # Number of worker processes per DataLoader.
+    # Number of worker processes per dataloader.
     num_workers: int = 5
 
     # Also compute HD95 on training batches (expensive: scipy per sample/class).
@@ -196,7 +196,7 @@ class RuntimeConfig:
     amp_dtype: Literal["bf16", "fp16"] = "bf16"
 
     # Let cuDNN benchmark convolution algorithms per shape. Faster, but
-    # slightly non-deterministic; off by default to keep runs reproducible.
+    # slightly non-deterministic.
     cudnn_benchmark: bool = False
 
 
