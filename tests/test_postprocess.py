@@ -5,7 +5,12 @@ import autoroot
 import numpy as np
 import SimpleITK as sitk
 
-from src.postprocess import POSTPROCESSING, keep_largest_component, postprocess, postprocess_file
+from src.utils.postprocess import (
+    POSTPROCESSING,
+    keep_largest_component,
+    postprocess,
+    postprocess_file,
+)
 
 # --- LCC: stray heart / aorta blobs removed, esophagus pieces kept
 pred = np.zeros((20, 30, 30), np.uint8)

@@ -32,17 +32,25 @@ from src.models.MedNeXt3D import MedNeXt3D
 from src.models.ResUNet3D import ResUNet3D
 from src.models.UNet3D import UNet3D
 from src.models.VNet3D import VNet3D
-from src.postprocess import POSTPROCESSING, postprocess
+from src.utils.postprocess import POSTPROCESSING, postprocess
 from src.preprocessing.hu_window_to_3channel import DEFAULT_WINDOWS, apply_window
 
-MODELS = {"UNet3D": UNet3D, "VNet3D": VNet3D, "ResUNet3D": ResUNet3D, "MedNeXt3D": MedNeXt3D}
+MODELS = {
+    "UNet3D": UNet3D,
+    "VNet3D": VNet3D,
+    "ResUNet3D": ResUNet3D,
+    "MedNeXt3D": MedNeXt3D,
+}
 WINDOWS = dict(zip(["soft", "lung", "blood"], DEFAULT_WINDOWS))
 NUM_CLASSES = 5
 BODY_HU_THRESHOLD = -500
 
 
 def resample(image: sitk.Image, spacing) -> sitk.Image:
-    size = [int(round(n * s / t)) for n, s, t in zip(image.GetSize(), image.GetSpacing(), spacing)]
+    size = [
+        int(round(n * s / t))
+        for n, s, t in zip(image.GetSize(), image.GetSpacing(), spacing)
+    ]
     r = sitk.ResampleImageFilter()
     r.SetSize(size)
     r.SetOutputSpacing(spacing)
@@ -61,8 +69,12 @@ def body_crop(ct: np.ndarray, margin: int) -> tuple[int, int, int, int]:
     body = labels == int(np.argmax(sizes)) + 1
     ys = np.where(body.any(axis=(0, 2)))[0]
     xs = np.where(body.any(axis=(0, 1)))[0]
-    return (max(int(ys[0]) - margin, 0), min(int(ys[-1]) + 1 + margin, ct.shape[1]),
-            max(int(xs[0]) - margin, 0), min(int(xs[-1]) + 1 + margin, ct.shape[2]))
+    return (
+        max(int(ys[0]) - margin, 0),
+        min(int(ys[-1]) + 1 + margin, ct.shape[1]),
+        max(int(xs[0]) - margin, 0),
+        min(int(xs[-1]) + 1 + margin, ct.shape[2]),
+    )
 
 
 def preprocess(ct_img: sitk.Image, spacing, windows, margin):
@@ -71,7 +83,9 @@ def preprocess(ct_img: sitk.Image, spacing, windows, margin):
     ct = sitk.GetArrayFromImage(ct_res)  # (z, y, x)
     y0, y1, x0, x1 = body_crop(ct, margin)
     ct = ct[:, y0:y1, x0:x1].astype(np.float32)
-    chans = [np.round(apply_window(ct, *WINDOWS[w]) * 255).astype(np.uint8) for w in windows]
+    chans = [
+        np.round(apply_window(ct, *WINDOWS[w]) * 255).astype(np.uint8) for w in windows
+    ]
     img = torch.from_numpy(np.stack(chans).astype(np.float32) / 255.0)
     meta = {
         "crop_yx": [y0, y1, x0, x1],
@@ -94,7 +108,7 @@ def to_native_space(pred_zyx: np.ndarray, meta: dict) -> np.ndarray:
     X, Y, Z = meta["original_size_xyz"]
     D, hc, wc = pred_zyx.shape
     full = np.zeros((Dz, Hs, Ws), np.uint8)
-    full[:D, y0:y0 + hc, x0:x0 + wc] = pred_zyx
+    full[:D, y0 : y0 + hc, x0 : x0 + wc] = pred_zyx
     iz = np.clip(np.rint(np.arange(Z) * oz / sz).astype(int), 0, Dz - 1)
     iy = np.clip(np.rint(np.arange(Y) * oy / sy).astype(int), 0, Hs - 1)
     ix = np.clip(np.rint(np.arange(X) * ox / sx).astype(int), 0, Ws - 1)
@@ -102,17 +116,25 @@ def to_native_space(pred_zyx: np.ndarray, meta: dict) -> np.ndarray:
 
 
 def find_cts(root: Path) -> list[Path]:
-    cts = [p for p in root.rglob("Patient_*.nii*") if re.fullmatch(r"Patient_\d+\.nii(\.gz)?", p.name)]
+    cts = [
+        p
+        for p in root.rglob("Patient_*.nii*")
+        if re.fullmatch(r"Patient_\d+\.nii(\.gz)?", p.name)
+    ]
     return sorted(cts, key=lambda p: p.name)
 
 
 def main(args: argparse.Namespace) -> None:
     unknown = [s for s in args.postprocess if s not in POSTPROCESSING]
     if unknown:
-        raise SystemExit(f"Unknown --postprocess {unknown}, available: {list(POSTPROCESSING)}")
+        raise SystemExit(
+            f"Unknown --postprocess {unknown}, available: {list(POSTPROCESSING)}"
+        )
     if len(args.windows) != args.in_channels:
-        raise SystemExit(f"--windows {args.windows} gives {len(args.windows)} channel(s) "
-                         f"but --in_channels is {args.in_channels}")
+        raise SystemExit(
+            f"--windows {args.windows} gives {len(args.windows)} channel(s) "
+            f"but --in_channels is {args.in_channels}"
+        )
 
     cts = find_cts(Path(args.input))
     if args.patients:
@@ -120,24 +142,46 @@ def main(args: argparse.Namespace) -> None:
     if not cts:
         raise SystemExit(f"No Patient_XX.nii.gz CT scans found under {args.input}")
     dest = Path(args.dest)
-    existing = [p.name for p in cts if (dest / f"{p.name.split('.')[0]}.nii.gz").exists()]
+    existing = [
+        p.name for p in cts if (dest / f"{p.name.split('.')[0]}.nii.gz").exists()
+    ]
     if existing:
-        raise SystemExit(f"{dest} already has {existing}: refusing to overwrite, choose a new --dest")
+        raise SystemExit(
+            f"{dest} already has {existing}: refusing to overwrite, choose a new --dest"
+        )
     dest.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    net = MODELS[args.model](args.in_channels, NUM_CLASSES, kernels=args.kernels,
-                             deep_supervision=args.deep_supervision)
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    )
+    net = MODELS[args.model](
+        args.in_channels,
+        NUM_CLASSES,
+        kernels=args.kernels,
+        deep_supervision=args.deep_supervision,
+    )
     net.load_state_dict(torch.load(args.weights, map_location="cpu", weights_only=True))
     net.to(device).eval()
-    print(f">> {args.model} on {len(cts)} scan(s) ({device}), windows {args.windows}, "
-          f"postprocess {args.postprocess} -> {dest}")
+    print(
+        f">> {args.model} on {len(cts)} scan(s) ({device}), windows {args.windows}, "
+        f"postprocess {args.postprocess} -> {dest}"
+    )
 
     for ct_path in cts:
         t0 = time.time()
         pid = ct_path.name.split(".")[0]
-        img, meta = preprocess(sitk.ReadImage(str(ct_path)), tuple(args.spacing), args.windows, args.margin)
-        probs = predict_volume(net, img, tuple(args.patch), args.overlap, NUM_CLASSES, args.batch_size, device)
+        img, meta = preprocess(
+            sitk.ReadImage(str(ct_path)), tuple(args.spacing), args.windows, args.margin
+        )
+        probs = predict_volume(
+            net,
+            img,
+            tuple(args.patch),
+            args.overlap,
+            NUM_CLASSES,
+            args.batch_size,
+            device,
+        )
         pred = probs.argmax(0).cpu().numpy().astype(np.uint8)
         pred = postprocess(pred, args.postprocess)
         pred_xyz = to_native_space(pred, meta)
@@ -145,26 +189,59 @@ def main(args: argparse.Namespace) -> None:
         ct_nib = nib.load(str(ct_path))
         if pred_xyz.shape != ct_nib.shape[:3]:
             raise SystemExit(f"{pid}: prediction {pred_xyz.shape} != CT {ct_nib.shape}")
-        nib.save(nib.Nifti1Image(pred_xyz.astype(np.uint8), ct_nib.affine), str(dest / f"{pid}.nii.gz"))
+        nib.save(
+            nib.Nifti1Image(pred_xyz.astype(np.uint8), ct_nib.affine),
+            str(dest / f"{pid}.nii.gz"),
+        )
         counts = {k: int((pred_xyz == k).sum()) for k in range(1, NUM_CLASSES)}
-        print(f"  {pid}: {pred_xyz.shape} voxels per organ {counts} ({time.time() - t0:.0f}s)")
+        print(
+            f"  {pid}: {pred_xyz.shape} voxels per organ {counts} ({time.time() - t0:.0f}s)"
+        )
     print(f">> wrote {len(cts)} prediction(s) to {dest}")
 
 
 def get_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Predict unlabelled CT scans with a trained 3D model")
+    p = argparse.ArgumentParser(
+        description="Predict unlabelled CT scans with a trained 3D model"
+    )
     p.add_argument("--weights", required=True, help="bestweights.pt of the run")
     p.add_argument("--model", required=True, choices=list(MODELS))
     p.add_argument("--kernels", type=int, default=16)
     p.add_argument("--in_channels", type=int, default=1, choices=[1, 3])
-    p.add_argument("--deep_supervision", action="store_true", help="if the run was trained with it")
-    p.add_argument("--windows", nargs="+", default=["soft"], choices=list(WINDOWS),
-                   help="soft (1 channel) or soft lung blood (3 channels), as in training")
-    p.add_argument("--input", required=True, help="folder with Patient_XX.nii.gz CT scans (searched recursively)")
-    p.add_argument("--dest", required=True, help="output folder for Patient_XX.nii.gz predictions")
-    p.add_argument("--patients", nargs="+", help="only these, e.g. Patient_41 Patient_42")
-    p.add_argument("--postprocess", nargs="*", default=["lcc"], help="steps from src/postprocess.py")
-    p.add_argument("--spacing", type=float, nargs=3, default=[1.5, 1.5, 2.5], metavar=("X", "Y", "Z"))
+    p.add_argument(
+        "--deep_supervision", action="store_true", help="if the run was trained with it"
+    )
+    p.add_argument(
+        "--windows",
+        nargs="+",
+        default=["soft"],
+        choices=list(WINDOWS),
+        help="soft (1 channel) or soft lung blood (3 channels), as in training",
+    )
+    p.add_argument(
+        "--input",
+        required=True,
+        help="folder with Patient_XX.nii.gz CT scans (searched recursively)",
+    )
+    p.add_argument(
+        "--dest", required=True, help="output folder for Patient_XX.nii.gz predictions"
+    )
+    p.add_argument(
+        "--patients", nargs="+", help="only these, e.g. Patient_41 Patient_42"
+    )
+    p.add_argument(
+        "--postprocess",
+        nargs="*",
+        default=["lcc"],
+        help="steps from src/utils/postprocess.py",
+    )
+    p.add_argument(
+        "--spacing",
+        type=float,
+        nargs=3,
+        default=[1.5, 1.5, 2.5],
+        metavar=("X", "Y", "Z"),
+    )
     p.add_argument("--margin", type=int, default=4)
     p.add_argument("--patch", type=int, nargs=3, default=[132, 132, 128])
     p.add_argument("--overlap", type=float, default=0.5)
