@@ -101,6 +101,9 @@ def main(args: argparse.Namespace) -> None:
         pairs = [(src, dest)]
     if not pairs:
         raise SystemExit(f"No .nii/.nii.gz files in {src}")
+    existing = [str(d) for _, d in pairs if d.exists()]
+    if existing:
+        raise SystemExit(f"Refusing to overwrite {existing}, choose a new --dest")
 
     print(f">> Postprocessing {args.steps} on {len(pairs)} file(s)")
     for s, d in pairs:

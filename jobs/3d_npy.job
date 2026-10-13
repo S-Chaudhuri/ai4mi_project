@@ -29,7 +29,15 @@
 #     SKIP_AUGMENTED    True | False             original patients only            default False
 #     DEEP_SUPERVISION  True | False             loss on every decoder level       default False
 #     CHECK_ONLY        True | False             check settings, then stop         default False
+#     RESULTS_DIR       a new folder             where the outputs go              default below
 #     (True/False also accept true/false and 1/0)
+#
+#   OUTPUT (one folder per run, never overwritten; overview: bash jobs/results_table.sh):
+#     results/<run_name>/<jobid>/run_info.txt     settings, command, code version, status
+#     results/<run_name>/<jobid>/bestweights.pt   best checkpoint
+#     results/<run_name>/<jobid>/eval/metrics.csv per-patient + MEAN Dice / HD95 / NSD
+#     results/<run_name>/<jobid>/eval/submission/ prediction NIfTIs
+#     results/<run_name>/<jobid>/out.log          link to logs/<run_name>/<jobid>/out.log
 #
 #   EXTRA train.py OPTIONS (after the model; value = what this job uses by default):
 #     --training.epochs N                  int                          50
@@ -100,7 +108,7 @@ flag CHECK_ONLY False
 DATASET=SEGTHOR_3D_${CHANNELS}ch
 PROJECT=${PROJECT:-/home/scur0088/project}
 TARS=${TARS:-/scratch-shared/scur0088/tars}
-DATA_DIR=${TMPDIR:-/tmp}
+DATA_DIR=$(mktemp -d "${TMPDIR:-/tmp}/segthor_XXXXXX")
 
 TRAIN_ARGS=(
   --config configs/3d.yaml
@@ -120,16 +128,25 @@ TRAIN_ARGS+=("$@")
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$PROJECT"
-echo ">> job ${SLURM_JOB_ID:-local} on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
+source jobs/run_outputs.sh
+setup_results "$@"
+TRAIN_ARGS+=(--paths.results_dir "$RESULTS_DIR")
+echo ">> job $JOB_ID ($RUN_NAME) on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
 
 uv run python jobs/check_config.py "${TRAIN_ARGS[@]}" || fail "config check failed (see above), nothing was run"
-if [[ $CHECK_ONLY == true ]]; then exit 0; fi
+if [[ $CHECK_ONLY == true ]]; then echo ">> would write to: $RESULTS_DIR"; exit 0; fi
 
 for t in "$TARS/$DATASET.tar" "$TARS/segthor_train_full.tar"; do
   [[ -f "$t" ]] || fail "missing $t"
 done
+create_results "model=$MODEL channels=$CHANNELS loss=$LOSS skeleton_weight=$SKELETON_WEIGHT deep_supervision=$DEEP_SUPERVISION skip_augmented=$SKIP_AUGMENTED extra: $*"
 tar -xf "$TARS/$DATASET.tar" -C "$DATA_DIR"
 tar -xf "$TARS/segthor_train_full.tar" -C "$DATA_DIR"
 
 # Run python with -O to turn off asserts
+set +e
 uv run python -O src/train.py "${TRAIN_ARGS[@]}"
+rc=$?
+set -e
+finish_results $rc
+exit $rc

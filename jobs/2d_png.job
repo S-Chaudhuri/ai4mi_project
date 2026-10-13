@@ -24,7 +24,14 @@
 #     ONLINE_AUG      True | False      online intensity augmentation       default: config (True)
 #     MODE            full | partial    partial = do not supervise heart    default: config (full)
 #     CHECK_ONLY      True | False      check settings, then stop           default False
+#     RESULTS_DIR     a new folder      where the outputs go                default below
 #     (True/False also accept true/false and 1/0)
+#
+#   OUTPUT (one folder per run, never overwritten; overview: bash jobs/results_table.sh):
+#     results/<run_name>/<jobid>/run_info.txt     settings, command, code version, status
+#     results/<run_name>/<jobid>/bestweights.pt   best checkpoint
+#     results/<run_name>/<jobid>/out.log          link to logs/<run_name>/<jobid>/out.log
+#     (2D runs have no whole-volume evaluation: per-slice metrics are in the log / wandb)
 #
 #   EXTRA train.py OPTIONS (after the model; value = what this job uses by default):
 #     --training.epochs N                  int                          50  (1 epoch = all slices)
@@ -74,7 +81,7 @@ if [[ -n "$ONLINE_AUG" ]]; then flag ONLINE_AUG ""; fi
 
 PROJECT=${PROJECT:-/home/scur0088/project}
 TARS=${TARS:-/scratch-shared/scur0088/tars}
-DATA_DIR=${TMPDIR:-/tmp}
+DATA_DIR=$(mktemp -d "${TMPDIR:-/tmp}/segthor_XXXXXX")
 
 TRAIN_ARGS=(
   --config configs/2d.yaml
@@ -93,13 +100,22 @@ TRAIN_ARGS+=("$@")
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$PROJECT"
-echo ">> job ${SLURM_JOB_ID:-local} on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
+source jobs/run_outputs.sh
+setup_results "$@"
+TRAIN_ARGS+=(--paths.results_dir "$RESULTS_DIR")
+echo ">> job $JOB_ID ($RUN_NAME) on $(hostname) | code: $(git log --oneline -1 2>/dev/null || echo unknown)"
 
 uv run python jobs/check_config.py "${TRAIN_ARGS[@]}" || fail "config check failed (see above), nothing was run"
-if [[ $CHECK_ONLY == true ]]; then exit 0; fi
+if [[ $CHECK_ONLY == true ]]; then echo ">> would write to: $RESULTS_DIR"; exit 0; fi
 
 [[ -f "$TARS/SEGTHOR_2D.tar" ]] || fail "missing $TARS/SEGTHOR_2D.tar"
+create_results "model=$MODEL skip_augmented=$SKIP_AUGMENTED online_aug=${ONLINE_AUG:-config} mode=${MODE:-config} extra: $*"
 tar -xf "$TARS/SEGTHOR_2D.tar" -C "$DATA_DIR"
 
 # Run python with -O to turn off asserts
+set +e
 uv run python -O src/train.py "${TRAIN_ARGS[@]}"
+rc=$?
+set -e
+finish_results $rc
+exit $rc
