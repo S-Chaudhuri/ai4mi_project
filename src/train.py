@@ -321,7 +321,7 @@ def build_dataloaders(config: Config):
     if config.wandb.store_artifect:
         # Store the checksum of the dataset
         artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
-        artifect.add_reference(f"file://{data_root_dir}")
+        artifect.add_reference(f"file://{data_root_dir.resolve()}")
         wandb.log_artifact(artifect)
 
     return train_loader, val_loader
