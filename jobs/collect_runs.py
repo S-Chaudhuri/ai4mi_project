@@ -1,7 +1,12 @@
 """Collect every training run from the Slurm logs into one table + CSV (for graphs).
 
-    python jobs/collect_runs.py              all logs under logs/ and jobs/logs/
+    python jobs/collect_runs.py              every job since SINCE (default 2026-09-01)
     python jobs/collect_runs.py skel         only runs whose name or model contains "skel"
+    SINCE=2026-10-01 python jobs/collect_runs.py
+
+The job list comes from sacct (all your jobs, also those without a log, e.g.
+pending or cancelled before starting), matched to the logs under logs/,
+jobs/logs/ and slurm-*.out.
 
 Per run: Slurm state (sacct), config (from the config the log prints), progress,
 the error if it failed, and the final whole-volume metrics (eval/metrics.csv of
@@ -10,6 +15,7 @@ Writes results/all_runs_<date>_<time>.csv (never overwrites).
 """
 
 import ast
+import os
 import csv
 import re
 import subprocess
@@ -19,7 +25,7 @@ from pathlib import Path
 
 ORGANS = ["esophagus", "heart", "trachea", "aorta"]
 LOG_GLOBS = ["logs/**/*.log", "logs/**/*.out", "jobs/logs/**/*.log", "jobs/logs/**/*.out", "slurm-*.out"]
-ERROR_LINE = re.compile(r"^([\w.]*(Error|Exception)\b.*|.*\bCANCELLED\b.*|.*DUE TO TIME LIMIT.*|ERROR: .*)$")
+ERROR = re.compile(r"(^[\w.]*(Error|Exception)\b.*|\*\*\* JOB .*|\bslurmstepd: error: .*|^ERROR: .*)")
 
 
 def job_id(log: Path) -> str:
@@ -71,22 +77,20 @@ def metrics_from_log(text: str) -> dict:
     return {k: sum(v) / len(v) for k, v in per.items()}
 
 
-def sacct(ids: list[str]) -> dict:
+def sacct(since: str) -> dict:
+    """All of this user's jobs since `since` (empty if sacct is not available)."""
+    try:
+        res = subprocess.run(
+            ["sacct", "-X", "-n", "-P", "-S", since, "-o", "JobID,JobName,State,Elapsed,Partition,WorkDir"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
     out = {}
-    ids = [i for i in ids if i.isdigit()]
-    for i in range(0, len(ids), 200):
-        try:
-            res = subprocess.run(
-                ["sacct", "-X", "-n", "-P", "-j", ",".join(ids[i:i + 200]),
-                 "-o", "JobID,JobName,State,Elapsed,Partition"],
-                capture_output=True, text=True, timeout=60,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return out
-        for line in res.stdout.splitlines():
-            jid, name, state, elapsed, part = (line.split("|") + [""] * 5)[:5]
-            out[jid] = {"slurm_name": name, "state": state.split()[0] if state else "",
-                        "elapsed": elapsed, "partition": part}
+    for line in res.stdout.splitlines():
+        jid, name, state, elapsed, part, workdir = (line.split("|") + [""] * 6)[:6]
+        out[jid] = {"slurm_name": name, "state": state.split()[0] if state else "",
+                    "elapsed": elapsed, "partition": part, "workdir": workdir}
     return out
 
 
@@ -97,7 +101,7 @@ def collect(log: Path) -> dict:
 
     epochs = [int(e) for e in re.findall(r"Validation \(\s*(\d+)\)", text)]
     improved = re.findall(r"Improved dice at epoch (\d+): [\d.]+->([\d.]+)", text)
-    errors = [ln.strip() for ln in text.splitlines() if ERROR_LINE.match(ln.strip())]
+    errors = [m.group(0) for ln in text.splitlines() if (m := ERROR.search(ln.strip()))]
     errors = [e for e in errors if "wandb" not in e]
 
     results_dir = g("paths", "results_dir")
@@ -134,6 +138,14 @@ def collect(log: Path) -> dict:
     return row
 
 
+def collect_empty() -> dict:
+    """The columns of a row, for jobs that have no log at all."""
+    return {k: "" for k in (
+        "job name log model dataset channels loss skeleton_weight offline_aug online_aug deep_supervision mode "
+        "epochs_cfg batch_size epochs_done best_val_dice best_epoch metrics_from error results_dir "
+        "mean_dice mean_hd95 mean_nsd").split()} | {f"{o}_{k}": "" for o in ORGANS for k in ("dice", "hd95", "nsd")}
+
+
 def guess_state(row: dict) -> str:
     err = row["error"]
     if "TIME LIMIT" in err:
@@ -152,7 +164,22 @@ def main() -> None:
     logs = sorted({p for pat in LOG_GLOBS for p in Path(".").glob(pat) if p.is_file()})
     rows = [collect(p) for p in logs]
 
-    slurm = sacct([r["job"] for r in rows])
+    slurm = sacct(os.environ.get("SINCE", "2026-09-01"))
+    logged = {r["job"] for r in rows}
+    for jid, s in slurm.items():
+        if jid not in logged:
+            no_log = "" if s["state"] == "PENDING" else f"no log found (submitted from {s['workdir']})"
+            rows.append({**collect_empty(), "job": jid, "epochs_done": 0, "error": no_log})
+
+    # Runs that wrote into the same results folder overwrote each other's checkpoint/metrics
+    by_dir: dict = {}
+    for r in rows:
+        if r["results_dir"]:
+            by_dir.setdefault(r["results_dir"], []).append(r["job"])
+    for r in rows:
+        shared = [j for j in by_dir.get(r["results_dir"], []) if j != r["job"]]
+        r["note"] = f"results folder shared with {','.join(shared)}: metrics unreliable" if shared else ""
+
     for r in rows:
         s = slurm.get(r["job"], {})
         r["name"] = r["name"] or s.get("slurm_name", "")
@@ -165,6 +192,7 @@ def main() -> None:
     if not rows:
         sys.exit("No logs found")
 
+    print(f"jobs in sacct since {os.environ.get('SINCE', '2026-09-01')}: {len(slurm)}, logs found: {len(logs)}")
     fmt = "{:<9} {:<26} {:<10} {:<9} {:<10} {:<15} {:<7} {:>4} {:>5} {:>5} {:>6} {:>7} {:>7} {:>7}  {}"
     print(fmt.format("JOB", "NAME", "STATE", "ELAPSED", "MODEL", "DATASET", "LOSS", "SKEL", "AUG", "EP",
                      "VAL", "DICE", "HD95", "ESO", "ERROR"))
@@ -175,7 +203,7 @@ def main() -> None:
             r["job"], r["name"][:26], r["state"][:10], r["elapsed"], str(r["model"])[:10],
             str(r["dataset"]).replace("SEGTHOR", "S")[:15], str(r["loss"])[:7], str(r["skeleton_weight"]), aug,
             f"{r['epochs_done']}/{r['epochs_cfg']}", r["best_val_dice"], r["mean_dice"], r["mean_hd95"],
-            r["esophagus_dice"], r["error"][:60],
+            r["esophagus_dice"], (r["note"] or r["error"])[:70],
         ))
 
     base = Path("results") / f"all_runs_{datetime.now():%Y%m%d_%H%M%S}"
