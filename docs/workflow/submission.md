@@ -3,6 +3,8 @@
 How to produce the course submission (`group-12/` + tarball) for a given model
 — a `config.yaml` plus its `bestweights.pt` — on a clean machine.
 
+Steps 2–5 in one go: `bash scripts/submit.sh <config.yaml> <bestweights.pt> [run_dir]`.
+
 ## What you need
 
 - The repo, at the commit you want to submit (this branch: `submission`).
