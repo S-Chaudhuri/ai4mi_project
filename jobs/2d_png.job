@@ -1,11 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=segthor_2d
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=9
+#SBATCH --cpus-per-task=16
 #SBATCH --time=02:00:00
 #SBATCH --output=logs/%x/%j/out.log
-#SBATCH --constraint=scratch-node
 
 # ============================================================================
 # 2D TRAINING  (ENet, ShallowNet) on the HU-windowed PNG slices (SEGTHOR_2D.tar,

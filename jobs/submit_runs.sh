@@ -7,7 +7,6 @@
 #   bash jobs/submit_runs.sh test  <name>          1-epoch check job (30 min limit)
 #   bash jobs/submit_runs.sh run   <name> [...]    full runs ("all" = every experiment)
 #   DRY_RUN=1 bash jobs/submit_runs.sh run all     check, then only print the sbatch lines
-#   GPU=h100 bash jobs/submit_runs.sh run <name>   on an H100 (gpu_h100) instead of an A100
 #
 # Every selected experiment is checked first (same options as the real job);
 # if any check fails, NOTHING is submitted.
@@ -56,9 +55,6 @@ check() {  # check <experiment line> <mode>: run the job file in CHECK_ONLY mode
 submit() {  # submit <experiment line> <test|run>
   IFS='|' read -r name job env _ <<< "$1"
   local cmd=(sbatch --export="ALL,$env")
-  case "${GPU:-a100}" in
-    h100) cmd+=(--partition=gpu_h100 --cpus-per-task=16) ;;
-  esac
   if [[ "$2" == "test" ]]; then cmd+=(--time=00:30:00 -J "test_$name"); else cmd+=(-J "$name"); fi
   # shellcheck disable=SC2206
   cmd+=("jobs/$job" $(job_args "$1" "$2"))
@@ -67,7 +63,6 @@ submit() {  # submit <experiment line> <test|run>
 }
 
 mode=${1:-list}
-case "${GPU:-a100}" in a100|h100) ;; *) echo "GPU must be a100 or h100, got '$GPU'" >&2; exit 1 ;; esac
 case "$mode" in
   list)
     printf "%-20s %-12s %-50s %s\n" NAME JOB SETTINGS "MODEL / OPTIONS"

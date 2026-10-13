@@ -1,11 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=segthor_3d
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=18
+#SBATCH --cpus-per-task=16
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/%x/%j/out.log
-#SBATCH --constraint=scratch-node
 
 # ============================================================================
 # 3D TRAINING + EVALUATION  (UNet3D, VNet3D, ResUNet3D, MedNeXt3D)
