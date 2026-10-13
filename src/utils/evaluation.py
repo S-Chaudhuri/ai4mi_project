@@ -29,42 +29,61 @@ CLASS_NAMES = {1: "esophagus", 2: "heart", 3: "trachea", 4: "aorta"}  # SegTHOR 
 #     )
 #     return up.astype(np.uint8)
 
+
 def to_native_space(pred_zyx: np.ndarray, meta: dict) -> np.ndarray:
     """(D, hc, wc) class map of the stored, cropped array -> (X, Y, Z) at the original CT grid."""
     y0, y1, x0, x1 = meta["crop_yx"]
     Dz, Hs, Ws = meta["resampled_size_zyx"]
-    sz, sy, sx = meta["spacing_zyx"]                       # spacing of the stored array
+    sz, sy, sx = meta["spacing_zyx"]  # spacing of the stored array
     ox, oy, oz = meta["original_spacing_xyz"]
     X, Y, Z = meta["original_size_xyz"]
     D, hc, wc = pred_zyx.shape
     assert D == Dz, (D, Dz)
-    assert abs(hc - (y1 - y0)) <= 1 and abs(wc - (x1 - x0)) <= 1, (pred_zyx.shape, meta["crop_yx"])
+    assert abs(hc - (y1 - y0)) <= 1 and abs(wc - (x1 - x0)) <= 1, (
+        pred_zyx.shape,
+        meta["crop_yx"],
+    )
     assert y0 + hc <= Hs and x0 + wc <= Ws
 
-    full = np.zeros((Dz, Hs, Ws), np.uint8)                # undo the crop: pad back to the resampled grid
-    full[:, y0:y0 + hc, x0:x0 + wc] = pred_zyx
+    full = np.zeros(
+        (Dz, Hs, Ws), np.uint8
+    )  # undo the crop: pad back to the resampled grid
+    full[:, y0 : y0 + hc, x0 : x0 + wc] = pred_zyx
 
     # undo the resampling: nearest neighbour, original voxel -> resampled voxel
     iz = np.clip(np.rint(np.arange(Z) * oz / sz).astype(int), 0, Dz - 1)
     iy = np.clip(np.rint(np.arange(Y) * oy / sy).astype(int), 0, Hs - 1)
     ix = np.clip(np.rint(np.arange(X) * ox / sx).astype(int), 0, Ws - 1)
-    return full[iz][:, iy][:, :, ix].transpose(2, 1, 0)    # (Z,Y,X) -> (X, Y, Z)
+    return full[iz][:, iy][:, :, ix].transpose(2, 1, 0)  # (Z,Y,X) -> (X, Y, Z)
 
 
 def load_native_gt(data_root, patient, split_dir="train", dataset_name="SegTHOR"):
     base = Path(data_root) / dataset_name
-    for sd in dict.fromkeys([split_dir, "train", "val", "test"]):   # requested split first
-        matches = sorted((base / sd / patient).glob("GT*.nii*"))      # GT.nii.gz, GT_4label_v6.nii.gz, ...
+    for sd in dict.fromkeys(
+        [split_dir, "train", "val", "test"]
+    ):  # requested split first
+        matches = sorted(
+            (base / sd / patient).glob("GT*.nii*")
+        )  # GT.nii.gz, GT_4label_v6.nii.gz, ...
         if matches:
             nii = nib.load(str(matches[0]))
             break
     else:
-        have = sorted(p.name for p in base.iterdir()) if base.exists() else "base folder missing"
-        sample = sorted(p.name for p in (base / split_dir).glob("*"))[:5] if (base / split_dir).exists() else "n/a"
+        have = (
+            sorted(p.name for p in base.iterdir())
+            if base.exists()
+            else "base folder missing"
+        )
+        sample = (
+            sorted(p.name for p in (base / split_dir).glob("*"))[:5]
+            if (base / split_dir).exists()
+            else "n/a"
+        )
         raise FileNotFoundError(
             f"No GT*.nii* for {patient} under {base}/(train|val|test)/{patient}/. "
             f"{base.name} contains: {have}; {split_dir}/ starts with: {sample}"
         )
+
     return (
         np.asarray(nii.dataobj).astype(np.uint8),
         tuple(float(z) for z in nii.header.get_zooms()[:3]),
@@ -120,10 +139,58 @@ def write_csv(results: dict, path: Path):
             )
 
 
-def write_submission(pred_xyz: np.ndarray, affine, patient: str, out_dir: Path):
-    """One NIfTI per patient, uint8 labels 0-4, native grid and affine of the CT."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+def write_submission(
+    pred_xyz: np.ndarray, affine, patient: str, out_dir: Path, gt_xyz=None
+):
+    (out_dir / "pred").mkdir(parents=True, exist_ok=True)
     nib.save(
         nib.Nifti1Image(pred_xyz.astype(np.uint8), affine),
-        str(out_dir / f"{patient}.nii.gz"),
+        str(out_dir / "pred" / f"{patient}.nii.gz"),
     )
+
+    if gt_xyz is not None:
+        (out_dir / "gt").mkdir(parents=True, exist_ok=True)
+        nib.save(
+            nib.Nifti1Image(gt_xyz.astype(np.uint8), affine),
+            str(out_dir / "gt" / f"{patient}.nii.gz"),
+        )
+
+
+def load_native_ct(ct_root, patient):
+    """Shape and affine of a patient's raw CT from the unzipped test set:
+    <ct_root>/<patient>/*.nii.gz or a flat <ct_root>/<patient>.nii.gz."""
+    ct_root = Path(ct_root)
+    pdir = ct_root / patient
+    if pdir.is_dir():
+        ct_path = pdir / f"{patient}.nii.gz"
+        if not ct_path.is_file():
+            cands = sorted(p for p in pdir.glob("*.nii.gz") if p.name != "GT.nii.gz")
+            if len(cands) != 1:
+                raise FileNotFoundError(
+                    f"No {patient}.nii.gz (or single CT) in {pdir}: "
+                    f"{[p.name for p in pdir.glob('*.nii.gz')]}"
+                )
+            ct_path = cands[0]
+    else:
+        ct_path = ct_root / f"{patient}.nii.gz"
+        if not ct_path.is_file():
+            raise FileNotFoundError(f"No {pdir} or {ct_path}")
+
+    nii = nib.load(str(ct_path))
+    return np.asarray(nii.dataobj).shape, nii.affine
+
+
+def write_metrics_npz(
+    results: dict, out_dir: Path, K: int, classes: dict = CLASS_NAMES
+):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for metric in ("dice", "hd95", "nsd"):
+        arrays = {}
+        for stem, organs in results.items():
+            arr = np.full(K, np.nan, dtype=np.float32)
+            for k, name in classes.items():
+                if name in organs:
+                    arr[k] = organs[name][metric]
+            arrays[stem] = arr
+        np.savez(out_dir / f"3d_{metric}.npz", **arrays)
+        print(f">> Wrote {out_dir / f'3d_{metric}.npz'}")

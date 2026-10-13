@@ -1,0 +1,53 @@
+# Example config showing every supported sweep distribution.
+#
+# Any scalar value of the form "<dist args...>" is sampled ONCE when the
+# config is loaded, and the drawn value is used for the run. Sweeping only
+# applies to values coming from a yaml file: a CLI flag (e.g.
+# --training.lr 0.01) always wins over a swept yaml value, and a run with no
+# --config file never sweeps.
+#
+# The sweep random generator is seeded from the SWEEP_SEED environment
+# variable when set, otherwise a random seed is drawn. The seed and every
+# sampled value are printed at startup and logged to wandb under "sweep"
+# (spec, drawn value and seed), so any run can be reproduced by re-running
+# with the same SWEEP_SEED. On Snellius, one sweep run per array task works
+# with e.g. SWEEP_SEED=$SLURM_ARRAY_TASK_ID.
+#
+# Supported distributions:
+#   <uniform low high>       float, uniform in [low, high]
+#   <loguniform low high>    float, uniform in log space (good for lr,
+#                            weight decay); also accepted as <uniformexp ...>
+#   <intuniform low high>    int, uniform in [low, high] (both inclusive)
+#   <gaussian mean std>      float, normal distribution with the given mean
+#                            and standard deviation
+#   <choice a b c ...>       pick one of the listed options at random
+#                            (works on str, int and enum-style fields)
+
+model:
+  # choice: pick one of the 3D architectures at random.
+  # Keep is_3d below in sync with this list.
+  name: <choice UNet3D VNet3D MedNeXt3D>
+  is_3d: true
+
+  # choice on an int field: the picked string is coerced back to an int.
+  kernels: <choice 8 16 32>
+
+  # gaussian: caveat - a normal distribution can sample negative values
+  # (or >1 for a rate like dropout), which is meaningless here. If you need
+  # a bounded rate, prefer <uniform 0.0 0.3> instead.
+  dropout: <gaussian 0.1 0.05>
+
+training:
+  # loguniform: the classic lr sweep. 1e-5..5e-4 covers four orders of
+  # magnitude with equal probability per decade.
+  lr: <loguniform 0.00001 0.0005>
+
+  # uniform: plain linear range.
+  weight_decay: <uniform 0.0 0.1>
+
+  # intuniform: whole numbers for counts like epochs/batch sizes.
+  epochs: <intuniform 10 30>
+
+  # choice: pick between the schedulers / losses.
+  scheduler: <choice cosine none>
+  loss: <choice ce dice_ce>

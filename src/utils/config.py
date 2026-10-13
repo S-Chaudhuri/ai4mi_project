@@ -2,11 +2,15 @@ import argparse
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional, Union, get_args, get_origin, get_type_hints
+from typing import Literal, Optional
 import autoroot
-import yaml
 
-import dataclasses
+from src.utils.config_helpers import (
+    _load_config_file,
+    _make_sweep_rng,
+    instantiate_dataclass,
+)
+
 from dataclasses import dataclass, field
 
 import torch
@@ -174,7 +178,7 @@ class RuntimeConfig:
     # around epochs and logging easily.
     debug: bool = False
 
-    # Number of worker processes per DataLoader.
+    # Number of worker processes per dataloader.
     num_workers: int = 5
 
     # Also compute HD95 on training batches (expensive: scipy per sample/class).
@@ -192,7 +196,7 @@ class RuntimeConfig:
     amp_dtype: Literal["bf16", "fp16"] = "bf16"
 
     # Let cuDNN benchmark convolution algorithms per shape. Faster, but
-    # slightly non-deterministic; off by default to keep runs reproducible.
+    # slightly non-deterministic.
     cudnn_benchmark: bool = False
 
 
@@ -354,74 +358,9 @@ class Config:
     # torch.profiler settings.
     profiler: ProfilerConfig = field(default_factory=ProfilerConfig)
 
+    sweep: Optional[dict] = None
 
-def _unwrap_optional(expected):
-    # Optional[X] is Union[X, None]; reduce it to X when unambiguous
-    if get_origin(expected) is Union:
-        non_none = [a for a in get_args(expected) if a is not type(None)]
-        if len(non_none) == 1:
-            return non_none[0]
-    return expected
-
-
-def _coerce_value(value, expected):
-    # Cast plain values loaded from yaml to the annotated type
-    if value is None:
-        return value
-
-    origin = get_origin(expected)
-    if origin is tuple:
-        return tuple(value)
-    if origin is list:
-        return list(value)
-    if expected is Path:
-        return Path(value)
-    if expected is bool:
-        return bool(value)
-    if expected is int:
-        return int(value)
-    if expected is float:
-        return float(value)
-    if expected is str:
-        return str(value)
-    return value
-
-
-def instantiate_dataclass(cls, data: dict):
-    if not dataclasses.is_dataclass(cls):
-        return data
-
-    field_names = {f.name for f in dataclasses.fields(cls)}
-    field_types = get_type_hints(cls)
-    kwargs = {}
-
-    for key, value in data.items():
-        # Ignore keys in yaml that don't exist in the dataclass
-        if key not in field_names:
-            continue
-
-        expected_type = _unwrap_optional(field_types[key])
-
-        # If the expected field is a nested dataclass, instantiate it recursively
-        if dataclasses.is_dataclass(expected_type) and isinstance(value, dict):
-            kwargs[key] = instantiate_dataclass(expected_type, value)
-        else:
-            kwargs[key] = _coerce_value(value, expected_type)
-
-    return cls(**kwargs)  # type: ignore
-
-
-def _load_config_file():
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--config", type=str, default="")
-    args, remaining_argv = parser.parse_known_args()
-
-    config_path = Path(args.config)
-    if args.config != "" and config_path.exists():
-        with open(config_path, "r") as fp:
-            return yaml.safe_load(fp) or {}, remaining_argv
-
-    return {}, remaining_argv
+    sweep_seed: Optional[int] = None
 
 
 def _new_results_dir(config: Config) -> Path:
@@ -454,12 +393,26 @@ def get_config() -> Config:
     yaml_dict, remaining_argv = _load_config_file()
 
     base_inst = Config()
+    sweep_record: dict[str, dict] = {}
+    sweep_seed: int | None = None
     if yaml_dict:
-        base_inst = instantiate_dataclass(Config, yaml_dict)
+        rng, sweep_seed = _make_sweep_rng()
+        base_inst = instantiate_dataclass(
+            Config, yaml_dict, rng=rng, record=sweep_record
+        )
 
     config = tyro.cli(Config, default=base_inst, args=remaining_argv)
     if isinstance(config, dict):
         raise Exception("config was loaded as a dict")
+
+    if sweep_record:
+        # Need to log to wandb
+        config.sweep = sweep_record
+        config.sweep_seed = sweep_seed if sweep_record else None
+        if sweep_record:
+            print(f">> Sweep seed: {sweep_seed}")
+            for name, entry in sweep_record.items():
+                print(f">> sweep: {name} = {entry['value']!r} ~ {entry['spec']}")
 
     # Make sure a gpu is available if configured to use
     config.training.gpu = config.training.gpu and torch.cuda.is_available()

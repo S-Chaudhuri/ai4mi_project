@@ -42,6 +42,7 @@ from functools import partial
 import autoroot  # noqa     Do not remove
 
 from src import eval_3D
+from scripts.generate_example_yaml_config import generate_yaml_config
 from src.utils.config import Config, get_config
 from src.utils.dataset import GridBoxDataset, SliceDataset, BoxDataset, CoarseDataset
 from src.utils.augmentations_online import make_img_transform
@@ -320,7 +321,7 @@ def build_dataloaders(config: Config):
     if config.wandb.store_artifect:
         # Store the checksum of the dataset
         artifect = wandb.Artifact(name=config.dataset.name, type="dataset")
-        artifect.add_reference(f"file://{data_root_dir}")
+        artifect.add_reference(f"file://{data_root_dir.resolve()}")
         wandb.log_artifact(artifect)
 
     return train_loader, val_loader
@@ -375,7 +376,7 @@ def _main_loss(config: Config):
         idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
     else:
         raise ValueError(config.training.mode, config.dataset.name)
-    
+
     foreground_idk = [c for c in idk if c != 0]
 
     if config.training.loss == "ce":
@@ -390,11 +391,11 @@ def _main_loss(config: Config):
         )
     elif config.training.loss == "tversky":
         return TverskyLoss(
-        idk=foreground_idk,
-        is_3d=config.model.is_3d,
-        alpha=config.training.tversky_alpha,
-        beta=config.training.tversky_beta,
-        smooth=config.training.tversky_smooth,
+            idk=foreground_idk,
+            is_3d=config.model.is_3d,
+            alpha=config.training.tversky_alpha,
+            beta=config.training.tversky_beta,
+            smooth=config.training.tversky_smooth,
         )
     else:
         raise ValueError(config.training.loss)
@@ -453,10 +454,9 @@ def runTraining(config: Config):
 
     num_classes = config.dataset.num_classes
     data_spacing = (1, 1, 1) if config.model.is_3d else (1, 1)
-    result_dir = config.paths.results_dir
-    # Guaranteed by get_config to be a path
-    if result_dir is None:
-        raise
+    result_dir: Path = config.paths.results_dir
+    result_dir.mkdir(parents=True, exist_ok=True)
+    generate_yaml_config(dataclasses.asdict(config), result_dir / "config.yaml")
 
     device_type = "cuda" if config.training.gpu else "cpu"
 
@@ -659,8 +659,10 @@ def runTraining(config: Config):
                     # the plain loss so it stays comparable across runs
                     if opt is not None and skeleton_loss_fn is not None:
                         skel = data["skel"].to(device, non_blocking=True)
-                        loss = loss + config.training.skeleton_weight * skeleton_loss_fn(
-                            pred_probs, skel
+                        loss = (
+                            loss
+                            + config.training.skeleton_weight
+                            * skeleton_loss_fn(pred_probs, skel)
                         )
                     log_loss[e, i] = loss.detach()  # One loss value per batch
 
@@ -782,10 +784,13 @@ def main():
     seed_all(config.training.seed, config.training.gpu, config.runtime.cudnn_benchmark)
 
     # Setup wandb
+    wandb_config = dataclasses.asdict(config)
+    if getattr(config, "sweep", None):
+        wandb_config["sweep"] = {"seed": config.sweep_seed, **config.sweep}
     wandb.init(
         entity=config.wandb.entity,
         project=config.wandb.project,
-        config=dataclasses.asdict(config),
+        config=wandb_config,
         dir=config.wandb.dir or (autoroot.root / "results" / "wandb"),
         notes=config.wandb.notes,
     )
