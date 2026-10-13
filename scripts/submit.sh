@@ -20,10 +20,10 @@ echo ">> wiping $RUN/eval"
 rm -rf "$RUN/eval"
 
 echo ">> val eval"
-uv run python src/eval_3D.py "${EVAL_ARGS[@]}" --eval.submission
+python src/eval_3D.py "${EVAL_ARGS[@]}" --eval.submission
 
 echo ">> test eval"
-uv run python src/eval_3D.py "${EVAL_ARGS[@]}" --eval.split test
+python src/eval_3D.py "${EVAL_ARGS[@]}" --eval.split test
 
 echo ">> assemble"
-uv run python scripts/make_submission.py --run "$RUN"
+python scripts/make_submission.py --run "$RUN"
