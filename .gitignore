@@ -18,3 +18,7 @@ logs/
 .worktrees/
 profiler/
 .DS_Store
+
+checkpoints/
+results/
+__pycache__/
