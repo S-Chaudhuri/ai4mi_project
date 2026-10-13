@@ -28,6 +28,11 @@ EXPERIMENTS=(
   "MedNeXt3D_skel1|3d_npy.job|CHANNELS=1,SKIP_AUGMENTED=True,SKELETON_WEIGHT=1|MedNeXt3D --training.batch_size 4"
   "UNet3D_skel1|3d_npy.job|CHANNELS=1,SKIP_AUGMENTED=True,SKELETON_WEIGHT=1|UNet3D"
   "VNet3D_skel1|3d_npy.job|CHANNELS=1,SKIP_AUGMENTED=True,SKELETON_WEIGHT=1|VNet3D"
+  "ResUNet3D_aug_skel1|3d_npy.job|CHANNELS=1,SKELETON_WEIGHT=1|ResUNet3D --augmentation.enabled"
+  "MedNeXt3D_aug_skel1|3d_npy.job|CHANNELS=1,SKELETON_WEIGHT=1|MedNeXt3D --training.batch_size 4 --augmentation.enabled"
+  "UNet3D_aug_skel1|3d_npy.job|CHANNELS=1,SKELETON_WEIGHT=1|UNet3D --augmentation.enabled"
+  "VNet3D_aug_skel1|3d_npy.job|CHANNELS=1,SKELETON_WEIGHT=1|VNet3D --augmentation.enabled"
+  "ResUNet3D_tversky_skel1|3d_npy.job|CHANNELS=1,SKIP_AUGMENTED=True,SKELETON_WEIGHT=1,LOSS=tversky|ResUNet3D"
   "ENet_2d_base|2d_png.job|SKIP_AUGMENTED=True,ONLINE_AUG=False|ENet"
   "ENet_2d_partial|2d_png.job|SKIP_AUGMENTED=True,ONLINE_AUG=False,MODE=partial|ENet"
 )
